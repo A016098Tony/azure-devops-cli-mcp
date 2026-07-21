@@ -23,21 +23,28 @@ npm run build
 
 ## Claude Desktop 設定
 
-在 `claude_desktop_config.json`（Windows 路徑：`%APPDATA%\Claude\claude_desktop_config.json`）
-的 `mcpServers` 加入：
+開啟 `claude_desktop_config.json`（Windows 完整路徑：
+`C:\Users\<你的帳號>\AppData\Roaming\Claude\claude_desktop_config.json`；也可從
+Claude Desktop → Settings → Developer → Edit Config 開啟），在 `mcpServers` 加入：
 
 ```json
 {
   "mcpServers": {
     "azure-devops-cli": {
-      "command": "node",
+      "command": "C:\\nvm4w\\nodejs\\node.exe",
       "args": ["D:\\mygithub\\azure_cli_mcp\\dist\\index.js"]
     }
   }
 }
 ```
 
-重啟 Claude Desktop 後即可使用。
+> **Windows + nvm 注意**：桌面應用（GUI 程序）繼承的 PATH 可能與終端機不同，
+> 若 `"command": "node"` 出現「找不到 node」，請改用 node 的絕對路徑（如上，
+> 用 `(Get-Command node).Source` 查出你的路徑）。此設定檔 Claude Desktop（含 Cowork）
+> 與 Claude Code 共用同一格式。
+
+**務必完整結束並重新啟動 Claude Desktop**（關閉分頁不夠，要整個結束再開）才會載入。
+啟動後可在對話框左下角的「+」→ Connectors 看到 `azure-devops-cli` 及其工具。
 
 ## 工具
 
