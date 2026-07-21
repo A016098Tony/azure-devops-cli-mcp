@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
 import type { ExecResult, ExecuteOptions } from "../src/executor.js";
+import { BUILT_IN_DEFAULTS, type Defaults } from "../src/defaults.js";
 
 interface RecordedCall {
   commandLine: string;
@@ -27,8 +28,11 @@ function makeFakeExecutor(result: Partial<ExecResult> = {}) {
   return { fake, calls };
 }
 
-async function connect(executeFn: ReturnType<typeof makeFakeExecutor>["fake"]) {
-  const server = createServer(executeFn);
+async function connect(
+  executeFn: ReturnType<typeof makeFakeExecutor>["fake"],
+  defaults: Defaults = BUILT_IN_DEFAULTS,
+) {
+  const server = createServer(executeFn, defaults);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -55,13 +59,15 @@ describe("azure-devops-cli-mcp server", () => {
     ]);
   });
 
-  test("az_devops 工具描述內嵌預設 org/project", async () => {
+  test("az_devops 工具描述內嵌預設 org/project/repository", async () => {
     const { fake } = makeFakeExecutor();
     const client = await connect(fake);
     const { tools } = await client.listTools();
     const azDevops = tools.find((t) => t.name === "az_devops");
-    expect(azDevops?.description).toContain("SKMHHIS");
-    expect(azDevops?.description).toContain("SKH-AOAI");
+    expect(azDevops?.description).toContain("https://dev.azure.com/SKMHHIS");
+    expect(azDevops?.description).toContain("MS");
+    expect(azDevops?.description).toContain("MS-Web");
+    expect(azDevops?.description).not.toContain("SKH-AOAI");
   });
 
   test("az_devops 執行合法命令並自動補 --output json", async () => {
@@ -73,7 +79,9 @@ describe("azure-devops-cli-mcp server", () => {
     });
     expect(result.isError).toBeFalsy();
     expect(textOf(result)).toContain('"id": 1');
-    expect(calls[0]?.commandLine).toBe("repos list --output json");
+    expect(calls[0]?.commandLine).toBe(
+      "repos list --output json --organization https://dev.azure.com/SKMHHIS --project MS",
+    );
     expect(calls[0]?.options?.timeoutMs).toBe(120_000);
   });
 
@@ -190,5 +198,102 @@ describe("azure-devops-cli-mcp server", () => {
     });
     expect(result.isError).toBe(true);
     expect(calls).toHaveLength(0);
+  });
+
+  test("repos pr 命令注入預設 repository", async () => {
+    const { fake, calls } = makeFakeExecutor();
+    const client = await connect(fake);
+    await client.callTool({
+      name: "az_devops",
+      arguments: { command: "repos pr list --status active" },
+    });
+    expect(calls[0]?.commandLine).toBe(
+      "repos pr list --status active --output json --organization https://dev.azure.com/SKMHHIS --project MS --repository MS-Web",
+    );
+  });
+
+  test("自訂 defaults 反映在注入與工具描述", async () => {
+    const { fake, calls } = makeFakeExecutor();
+    const custom: Defaults = {
+      organization: "https://dev.azure.com/OtherOrg",
+      project: "P2",
+      repository: "R2",
+    };
+    const client = await connect(fake, custom);
+    const { tools } = await client.listTools();
+    expect(
+      tools.find((t) => t.name === "az_devops")?.description,
+    ).toContain("OtherOrg");
+    await client.callTool({
+      name: "az_devops",
+      arguments: { command: "repos list" },
+    });
+    expect(calls[0]?.commandLine).toBe(
+      "repos list --output json --organization https://dev.azure.com/OtherOrg --project P2",
+    );
+  });
+
+  test("注入參數不被接受時移除該參數重試一次", async () => {
+    const commandLines: string[] = [];
+    const fake = (
+      commandLine: string,
+      options?: ExecuteOptions,
+    ): Promise<ExecResult> => {
+      void options;
+      commandLines.push(commandLine);
+      if (commandLines.length === 1) {
+        return Promise.resolve({
+          stdout: "",
+          stderr: "ERROR: unrecognized arguments: --project MS",
+          exitCode: 2,
+          timedOut: false,
+        });
+      }
+      return Promise.resolve({
+        stdout: "[]",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      });
+    };
+    const client = await connect(fake);
+    const result = await client.callTool({
+      name: "az_devops",
+      arguments: { command: "devops user list" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(commandLines).toHaveLength(2);
+    expect(commandLines[1]).toBe(
+      "devops user list --output json --organization https://dev.azure.com/SKMHHIS",
+    );
+  });
+
+  test("使用者自帶參數造成 unrecognized 時不重試", async () => {
+    const { fake, calls } = makeFakeExecutor({
+      stdout: "",
+      stderr: "ERROR: unrecognized arguments: --bogus x",
+      exitCode: 2,
+    });
+    const client = await connect(fake);
+    const result = await client.callTool({
+      name: "az_devops",
+      arguments: { command: "repos list --bogus x" },
+    });
+    expect(result.isError).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("非 unrecognized 的失敗不重試", async () => {
+    const { fake, calls } = makeFakeExecutor({
+      stdout: "",
+      stderr: "ERROR: TF400813: not authorized",
+      exitCode: 1,
+    });
+    const client = await connect(fake);
+    await client.callTool({
+      name: "az_devops",
+      arguments: { command: "repos list" },
+    });
+    expect(calls).toHaveLength(1);
   });
 });
