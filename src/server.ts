@@ -2,6 +2,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ensureJsonOutput, truncateOutput, validateScope } from "./command.js";
 import { execute, type ExecResult } from "./executor.js";
+import {
+  appendFlags,
+  BUILT_IN_DEFAULTS,
+  planInjection,
+  type Defaults,
+  type InjectedFlag,
+} from "./defaults.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const HELP_TIMEOUT_MS = 60_000;
@@ -44,10 +51,27 @@ function scopeError(message: string): ToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-export function createServer(executeFn: typeof execute = execute): McpServer {
+async function executeWithInjection(
+  executeFn: typeof execute,
+  command: string,
+  injected: InjectedFlag[],
+  options: { timeoutMs: number },
+): Promise<ExecResult> {
+  const first = await executeFn(appendFlags(command, injected), options);
+  if (first.exitCode === 0 || injected.length === 0) return first;
+  if (!/unrecognized arguments/i.test(first.stderr)) return first;
+  const remaining = injected.filter((f) => !first.stderr.includes(f.flag));
+  if (remaining.length === injected.length) return first;
+  return executeFn(appendFlags(command, remaining), options);
+}
+
+export function createServer(
+  executeFn: typeof execute = execute,
+  defaults: Defaults = BUILT_IN_DEFAULTS,
+): McpServer {
   const server = new McpServer({
     name: "azure-devops-cli-mcp",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
   server.registerTool(
@@ -57,8 +81,9 @@ export function createServer(executeFn: typeof execute = execute): McpServer {
       description:
         "執行 Azure DevOps CLI 命令（az 前綴由 server 自動加上，command 請勿包含）。" +
         "允許的命令群組：devops、repos、boards、pipelines、artifacts。" +
-        "預設 organization 為 https://dev.azure.com/SKMHHIS、預設 project 為 SKH-AOAI" +
-        "（已由 az devops configure 設定，通常不需要帶 --org/--project）。" +
+        `預設 organization 為 ${defaults.organization}、project 為 ${defaults.project}，` +
+        `repos pr 命令預設 repository 為 ${defaults.repository}` +
+        "（未指定時 server 會自動補上，通常不需要帶 --org/--project/--repository）。" +
         "未指定 -o/--output 時自動使用 --output json。" +
         '範例："repos pr list --status active"、"boards work-item show --id 123"。' +
         "不確定語法時，先用 az_devops_help 查詢。",
@@ -75,7 +100,9 @@ export function createServer(executeFn: typeof execute = execute): McpServer {
     async ({ command, timeout }) => {
       const scope = validateScope(command);
       if (!scope.ok) return scopeError(scope.error);
-      const result = await executeFn(ensureJsonOutput(command.trim()), {
+      const base = ensureJsonOutput(command.trim());
+      const injected = planInjection(base, defaults);
+      const result = await executeWithInjection(executeFn, base, injected, {
         timeoutMs: (timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
       });
       return toToolResult(result);
