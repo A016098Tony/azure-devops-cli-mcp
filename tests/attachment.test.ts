@@ -4,7 +4,9 @@ import {
   buildLinkUrl,
   buildUploadUrl,
   MAX_ATTACHMENT_BYTES,
+  resolveAuthHeader,
 } from "../src/attachment.js";
+import type { ExecResult, ExecuteOptions } from "../src/executor.js";
 
 describe("attachment URL 組裝", () => {
   test("buildUploadUrl 組出 attachments POST URL 並 encode 檔名", () => {
@@ -60,4 +62,73 @@ describe("buildLinkPatchBody", () => {
 
 test("MAX_ATTACHMENT_BYTES 為 100MB", () => {
   expect(MAX_ATTACHMENT_BYTES).toBe(100 * 1024 * 1024);
+});
+
+function makeFakeExecutor(result: Partial<ExecResult> = {}) {
+  const calls: Array<{ commandLine: string; options?: ExecuteOptions }> = [];
+  const fake = (
+    commandLine: string,
+    options?: ExecuteOptions,
+  ): Promise<ExecResult> => {
+    calls.push({ commandLine, options });
+    return Promise.resolve({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      ...result,
+    });
+  };
+  return { fake, calls };
+}
+
+describe("resolveAuthHeader", () => {
+  test("有 AZURE_DEVOPS_EXT_PAT 時用 Basic auth 且不呼叫 az", async () => {
+    const { fake, calls } = makeFakeExecutor();
+    const result = await resolveAuthHeader(
+      { AZURE_DEVOPS_EXT_PAT: "mypat" },
+      fake,
+    );
+    expect(result).toEqual({
+      ok: true,
+      header: `Basic ${Buffer.from(":mypat").toString("base64")}`,
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  test("無 PAT 時執行 az account get-access-token 取 Bearer token", async () => {
+    const { fake, calls } = makeFakeExecutor({ stdout: "eyJtoken\n" });
+    const result = await resolveAuthHeader({}, fake);
+    expect(result).toEqual({ ok: true, header: "Bearer eyJtoken" });
+    expect(calls[0]?.commandLine).toBe(
+      "account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv",
+    );
+    expect(calls[0]?.options?.timeoutMs).toBe(30_000);
+  });
+
+  test("PAT 為空白字串時視同未設定，改走 az", async () => {
+    const { fake, calls } = makeFakeExecutor({ stdout: "tok" });
+    const result = await resolveAuthHeader({ AZURE_DEVOPS_EXT_PAT: "  " }, fake);
+    expect(result).toEqual({ ok: true, header: "Bearer tok" });
+    expect(calls).toHaveLength(1);
+  });
+
+  test("az 失敗時回傳中文錯誤並提示兩種認證方式", async () => {
+    const { fake } = makeFakeExecutor({
+      exitCode: 1,
+      stderr: "ERROR: Please run 'az login'",
+    });
+    const result = await resolveAuthHeader({}, fake);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("az login");
+      expect(result.error).toContain("AZURE_DEVOPS_EXT_PAT");
+    }
+  });
+
+  test("az 成功但輸出為空時也視為失敗", async () => {
+    const { fake } = makeFakeExecutor({ stdout: "  \n" });
+    const result = await resolveAuthHeader({}, fake);
+    expect(result.ok).toBe(false);
+  });
 });
