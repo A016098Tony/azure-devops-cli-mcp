@@ -1,6 +1,6 @@
 {
   "name": "azure-devops-cli-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local MCP server bridging Claude Desktop/Cowork to the Azure DevOps CLI",
   "type": "module",
   "bin": {

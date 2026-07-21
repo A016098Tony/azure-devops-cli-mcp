@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
 import type { ExecResult, ExecuteOptions } from "../src/executor.js";
 import { BUILT_IN_DEFAULTS, type Defaults } from "../src/defaults.js";
+import type { AttachmentIo } from "../src/attachment.js";
 
 interface RecordedCall {
   commandLine: string;
@@ -31,8 +32,9 @@ function makeFakeExecutor(result: Partial<ExecResult> = {}) {
 async function connect(
   executeFn: ReturnType<typeof makeFakeExecutor>["fake"],
   defaults: Defaults = BUILT_IN_DEFAULTS,
+  io?: AttachmentIo,
 ) {
-  const server = createServer(executeFn, defaults);
+  const server = createServer(executeFn, defaults, io);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -49,13 +51,14 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
 }
 
 describe("azure-devops-cli-mcp server", () => {
-  test("列出兩個工具", async () => {
+  test("列出三個工具", async () => {
     const { fake } = makeFakeExecutor();
     const client = await connect(fake);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "az_devops",
       "az_devops_help",
+      "az_workitem_attach",
     ]);
   });
 
@@ -295,5 +298,60 @@ describe("azure-devops-cli-mcp server", () => {
       arguments: { command: "repos list" },
     });
     expect(calls).toHaveLength(1);
+  });
+
+  test("az_workitem_attach 成功上傳並回報附件 URL", async () => {
+    const { fake } = makeFakeExecutor();
+    const responses = [
+      new Response(
+        JSON.stringify({
+          id: "abc",
+          url: "https://dev.azure.com/SKMHHIS/_apis/wit/attachments/abc",
+        }),
+        { status: 201 },
+      ),
+      new Response("{}", { status: 200 }),
+    ];
+    const io: AttachmentIo = {
+      readFile: async () => Buffer.from("報告內容"),
+      fetchFn: (async () => responses.shift()!) as typeof fetch,
+      env: { AZURE_DEVOPS_EXT_PAT: "pat" },
+    };
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_workitem_attach",
+      arguments: { workItemId: 42, filePath: "D:\\tmp\\report.md" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toContain("report.md");
+    expect(textOf(result)).toContain("#42");
+  });
+
+  test("az_workitem_attach 失敗時標記 isError", async () => {
+    const { fake } = makeFakeExecutor();
+    const enoent = Object.assign(new Error("no such file"), {
+      code: "ENOENT",
+    });
+    const io: AttachmentIo = {
+      readFile: async () => { throw enoent; },
+      fetchFn: (async () => new Response("{}")) as typeof fetch,
+      env: { AZURE_DEVOPS_EXT_PAT: "pat" },
+    };
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_workitem_attach",
+      arguments: { workItemId: 1, filePath: "D:\\nope.md" },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("找不到檔案");
+  });
+
+  test("az_workitem_attach 工具描述內嵌預設 org/project", async () => {
+    const { fake } = makeFakeExecutor();
+    const client = await connect(fake);
+    const { tools } = await client.listTools();
+    const attach = tools.find((t) => t.name === "az_workitem_attach");
+    expect(attach?.description).toContain("https://dev.azure.com/SKMHHIS");
+    expect(attach?.description).toContain("MS");
   });
 });

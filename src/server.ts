@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ensureJsonOutput, truncateOutput, validateScope } from "./command.js";
@@ -9,6 +10,10 @@ import {
   type Defaults,
   type InjectedFlag,
 } from "./defaults.js";
+import {
+  attachFileToWorkItem,
+  type AttachmentIo,
+} from "./attachment.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const HELP_TIMEOUT_MS = 60_000;
@@ -68,10 +73,11 @@ async function executeWithInjection(
 export function createServer(
   executeFn: typeof execute = execute,
   defaults: Defaults = BUILT_IN_DEFAULTS,
+  io: AttachmentIo = { readFile, fetchFn: fetch, env: process.env },
 ): McpServer {
   const server = new McpServer({
     name: "azure-devops-cli-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
   });
 
   server.registerTool(
@@ -130,6 +136,51 @@ export function createServer(
         timeoutMs: HELP_TIMEOUT_MS,
       });
       return toToolResult(result);
+    },
+  );
+
+  server.registerTool(
+    "az_workitem_attach",
+    {
+      title: "上傳附件到 Work Item",
+      description:
+        "將本機檔案上傳為 Azure DevOps work item 附件並建立連結" +
+        "（純文字與 binary 檔皆可，上限 100MB）。" +
+        `預設 organization 為 ${defaults.organization}、project 為 ${defaults.project}。` +
+        "認證優先使用 AZURE_DEVOPS_EXT_PAT 環境變數，否則使用 az login 的憑證。",
+      inputSchema: {
+        workItemId: z
+          .number()
+          .int()
+          .positive()
+          .describe("目標 work item ID"),
+        filePath: z.string().describe("本機檔案的絕對路徑"),
+        comment: z
+          .string()
+          .optional()
+          .describe("附件備註，顯示在 work item 附件上"),
+        fileName: z
+          .string()
+          .optional()
+          .describe("覆寫附件顯示名稱，預設取 filePath 的檔名"),
+      },
+    },
+    async (params) => {
+      const outcome = await attachFileToWorkItem(
+        io,
+        executeFn,
+        defaults,
+        params,
+      );
+      if (!outcome.ok) {
+        return {
+          content: [{ type: "text", text: truncateOutput(outcome.error) }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text", text: truncateOutput(outcome.message) }],
+      };
     },
   );
 
