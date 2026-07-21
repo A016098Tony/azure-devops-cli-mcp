@@ -44,13 +44,13 @@
 安裝(repo 為 public,不需 GitHub 帳號授權):
 
 ```
-npm install -g git+https://github.com/A016098Tony/skh-msweb-azure-cli-mcp.git
+npm install -g git+https://github.com/A016098Tony/azure-devops-cli-mcp.git
 ```
 
 `package.json` 需新增 `"prepare": "npm run build"` script:`dist/` 已被 gitignore,
 repo 中沒有編譯產物;npm 從 git 安裝時會自動安裝 devDependencies 並執行 `prepare`,
 如此 `dist/index.js` 才會在安裝當下編譯出來,`bin` 連結才有效。
-(注意套件/bin 名稱是 `azure-devops-cli-mcp`,與 repo 名稱不同;npx 用的是套件名。)
+(repo 已改名為 `azure-devops-cli-mcp`,與套件/bin 名稱一致。)
 
 Claude Desktop / Cowork / Claude Code 設定:
 
