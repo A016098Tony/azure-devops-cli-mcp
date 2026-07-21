@@ -45,6 +45,43 @@ describe("validateScope", () => {
       "artifacts",
     ]);
   });
+
+  test("拒絕以 & 串接的命令（shell 注入）", () => {
+    const result = validateScope("repos list & echo PWNED");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("特殊字元");
+  });
+
+  test.each(["|", ";", "<", ">", "(", ")", "`", "^"])(
+    "拒絕引號外的 shell 特殊字元 %s",
+    (meta) => {
+      expect(validateScope(`repos list ${meta} more`).ok).toBe(false);
+    },
+  );
+
+  test("拒絕含換行的命令", () => {
+    expect(validateScope("repos list\ndel x").ok).toBe(false);
+  });
+
+  test("允許特殊字元位於雙引號內的 WIQL 查詢", () => {
+    expect(
+      validateScope(
+        `boards query --wiql "SELECT [System.Id] FROM WorkItems WHERE [System.State] <> 'Active'"`,
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("允許 --query 內含 JMESPath pipe（雙引號內）", () => {
+    expect(
+      validateScope(`repos pr list --query "[?isDraft] | [0]"`),
+    ).toEqual({ ok: true });
+  });
+
+  test("拒絕未配對的雙引號", () => {
+    const result = validateScope(`repos show --query "abc`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("引號");
+  });
 });
 
 describe("ensureJsonOutput", () => {

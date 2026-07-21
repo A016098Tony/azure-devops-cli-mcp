@@ -47,9 +47,10 @@ Claude Desktop / Cowork
 
 行為：
 
-1. **範圍驗證**：命令的第一個 token 必須是 `devops`、`repos`、`boards`、`pipelines`、`artifacts` 之一，否則拒絕執行。這是唯一的限制——群組內的所有子命令（含 `delete`）皆允許（使用者已確認完全開放）。
-2. **智慧補參**：若命令未指定 `-o` / `--output`，自動附加 `--output json`。
-3. 工具描述（description）內嵌預設 org/project 資訊，讓 Claude 不需每次帶 `--org` / `--project`。
+1. **範圍驗證**：命令的第一個 token 必須是 `devops`、`repos`、`boards`、`pipelines`、`artifacts` 之一，否則拒絕執行。群組內的所有子命令（含 `delete`）皆允許（使用者已確認完全開放）。
+2. **Shell 注入防護**：命令會經由 shell（Windows 上為 `cmd /c`）執行，因此在雙引號外若含 shell 控制字元（`& | ; < > ( ) \` ^` 或換行）一律拒絕，並要求未配對的雙引號也拒絕。否則 `repos list & <任意命令>` 之類的串接會繞過群組限制、執行任意本機命令——這對一個會讀取 work item／PR 等外部可控內容的 bridge 是實際的 prompt-injection 風險。含特殊字元的參數值（如 WIQL、`--query` 的 JMESPath）用雙引號包起來即可正常通過。
+3. **智慧補參**：若命令未指定 `-o` / `--output`，自動附加 `--output json`。
+4. 工具描述（description）內嵌預設 org/project 資訊，讓 Claude 不需每次帶 `--org` / `--project`。
 
 ### `az_devops_help`（語法查詢）
 
