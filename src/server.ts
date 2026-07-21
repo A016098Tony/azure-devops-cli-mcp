@@ -142,7 +142,7 @@ export function createServer(
   server.registerTool(
     "az_workitem_attach",
     {
-      title: "上傳附件到 Work Item",
+      title: "Attach File to Work Item",
       description:
         "將本機檔案上傳為 Azure DevOps work item 附件並建立連結" +
         "（純文字與 binary 檔皆可，上限 100MB）。" +
