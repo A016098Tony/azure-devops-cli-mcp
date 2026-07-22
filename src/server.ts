@@ -14,6 +14,14 @@ import {
   attachFileToWorkItem,
   type AttachmentIo,
 } from "./attachment.js";
+import { adoRest, type RestMethod, type RestOutcome } from "./rest.js";
+import {
+  createPullRequestComment,
+  getPullRequestChanges,
+  listPullRequestWorkItems,
+  showPullRequest,
+} from "./pullRequest.js";
+import { getWorkItemRelations, updateWorkItem } from "./workItem.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const HELP_TIMEOUT_MS = 60_000;
@@ -56,6 +64,18 @@ function scopeError(message: string): ToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
+function restToolResult(outcome: RestOutcome): ToolResult {
+  if (!outcome.ok) {
+    return {
+      content: [{ type: "text", text: truncateOutput(outcome.error) }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: "text", text: truncateOutput(outcome.text || "(無輸出)") }],
+  };
+}
+
 async function executeWithInjection(
   executeFn: typeof execute,
   command: string,
@@ -77,7 +97,7 @@ export function createServer(
 ): McpServer {
   const server = new McpServer({
     name: "azure-devops-cli-mcp",
-    version: "0.3.0",
+    version: "0.4.0",
   });
 
   server.registerTool(
@@ -142,7 +162,7 @@ export function createServer(
   server.registerTool(
     "az_workitem_attach",
     {
-      title: "上傳附件到 Work Item",
+      title: "Attach File to Work Item",
       description:
         "將本機檔案上傳為 Azure DevOps work item 附件並建立連結" +
         "（純文字與 binary 檔皆可，上限 100MB）。" +
@@ -181,6 +201,217 @@ export function createServer(
       return {
         content: [{ type: "text", text: truncateOutput(outcome.message) }],
       };
+    },
+  );
+
+  const prNumberSchema = z.number().int().positive().describe("PR 編號");
+  const projectSchema = z
+    .string()
+    .optional()
+    .describe(`覆寫預設 project（預設 ${defaults.project}）`);
+  const repositorySchema = z
+    .string()
+    .optional()
+    .describe(`覆寫預設 repository（預設 ${defaults.repository}）`);
+
+  server.registerTool(
+    "az_pr_show",
+    {
+      title: "Show Pull Request",
+      description:
+        "以 REST API 取得 PR 完整資訊（title、sourceRefName、targetRefName、status 等）。" +
+        `預設 organization 為 ${defaults.organization}、project 為 ${defaults.project}、` +
+        `repository 為 ${defaults.repository}。`,
+      inputSchema: {
+        prNumber: prNumberSchema,
+        project: projectSchema,
+        repository: repositorySchema,
+      },
+    },
+    async (params) =>
+      restToolResult(await showPullRequest(io, executeFn, defaults, params)),
+  );
+
+  server.registerTool(
+    "az_pr_changes",
+    {
+      title: "List Pull Request Changes",
+      description:
+        "以 REST API 取得 PR 的異動檔案清單（iteration changes）。" +
+        "未指定 iterationId 時自動使用最新 iteration，並在輸出開頭註明。" +
+        `預設 organization/project/repository 同 az_pr_show。`,
+      inputSchema: {
+        prNumber: prNumberSchema,
+        iterationId: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("指定 iteration，預設取最新"),
+        project: projectSchema,
+        repository: repositorySchema,
+      },
+    },
+    async (params) =>
+      restToolResult(
+        await getPullRequestChanges(io, executeFn, defaults, params),
+      ),
+  );
+
+  server.registerTool(
+    "az_pr_workitems",
+    {
+      title: "List Pull Request Work Items",
+      description:
+        "以 REST API 取得 PR 關聯的 work item 清單（id 與 url）。" +
+        `預設 organization/project/repository 同 az_pr_show。`,
+      inputSchema: {
+        prNumber: prNumberSchema,
+        project: projectSchema,
+        repository: repositorySchema,
+      },
+    },
+    async (params) =>
+      restToolResult(
+        await listPullRequestWorkItems(io, executeFn, defaults, params),
+      ),
+  );
+
+  server.registerTool(
+    "az_workitem_relations",
+    {
+      title: "Show Work Item Relations",
+      description:
+        "以 REST API 取得 work item 的完整資訊含 relations（$expand=relations），" +
+        "可用於檢查附件（AttachedFile 的 attributes.name）是否已存在。" +
+        `預設 organization 為 ${defaults.organization}。`,
+      inputSchema: {
+        workItemId: z.number().int().positive().describe("Work item ID"),
+      },
+    },
+    async ({ workItemId }) =>
+      restToolResult(
+        await getWorkItemRelations(io, executeFn, defaults, workItemId),
+      ),
+  );
+
+  server.registerTool(
+    "az_pr_comment",
+    {
+      title: "Create Pull Request Comment",
+      description:
+        "在 PR 上留言。未指定 threadId 時建立新的討論串（可用 filePath/line 錨定到檔案行）；" +
+        "指定 threadId 時回覆該討論串（此時忽略 filePath/line/status）。" +
+        `預設 organization/project/repository 同 az_pr_show。`,
+      inputSchema: {
+        prNumber: prNumberSchema,
+        content: z.string().describe("留言內容（不可為空）"),
+        threadId: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("回覆既有討論串的 thread ID"),
+        filePath: z
+          .string()
+          .optional()
+          .describe("新討論串錨定的檔案路徑（自動補開頭的 /）"),
+        line: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("錨定的行號（需搭配 filePath）"),
+        status: z
+          .enum(["active", "closed", "fixed", "wontFix", "pending"])
+          .optional()
+          .describe("新討論串的初始狀態，預設 active"),
+        project: projectSchema,
+        repository: repositorySchema,
+      },
+    },
+    async (params) =>
+      restToolResult(
+        await createPullRequestComment(io, executeFn, defaults, params),
+      ),
+  );
+
+  server.registerTool(
+    "az_workitem_update",
+    {
+      title: "Update Work Item Fields",
+      description:
+        "以 REST API 更新 work item 欄位（json-patch 由 server 組裝，僅允許 /fields/*）。" +
+        'fields 的 key 為欄位參考名稱，例如 {"System.State": "Resolved"}；' +
+        "historyComment 會寫入 System.History（等同在 Discussion 留言）。" +
+        "fields 與 historyComment 至少要提供一個。" +
+        `預設 organization 為 ${defaults.organization}。`,
+      inputSchema: {
+        workItemId: z.number().int().positive().describe("Work item ID"),
+        fields: z
+          .record(z.union([z.string(), z.number(), z.boolean()]))
+          .optional()
+          .describe('欄位參考名稱 → 新值，例如 {"System.State": "Resolved"}'),
+        historyComment: z
+          .string()
+          .optional()
+          .describe("寫入 System.History 的留言"),
+      },
+    },
+    async (params) =>
+      restToolResult(await updateWorkItem(io, executeFn, defaults, params)),
+  );
+
+  server.registerTool(
+    "az_rest",
+    {
+      title: "Azure DevOps REST (generic)",
+      description:
+        "對 Azure DevOps 發送任意 REST 請求（GET/POST/PATCH）。" +
+        "優先使用專用工具（az_pr_show、az_pr_changes、az_pr_workitems、" +
+        "az_workitem_relations、az_pr_comment、az_workitem_update、az_workitem_attach）；" +
+        "此工具僅供未涵蓋的端點使用。" +
+        `path 為 organization（${defaults.organization}）之後的相對路徑，` +
+        "未帶 api-version 時自動補 7.1。",
+      inputSchema: {
+        method: z.enum(["GET", "POST", "PATCH"]).describe("HTTP method"),
+        path: z
+          .string()
+          .describe(
+            '相對路徑，例如 "MS/_apis/git/repositories/MS-Web/pullRequests/1/threads"',
+          ),
+        body: z
+          .string()
+          .optional()
+          .describe("JSON 字串（GET 不可帶）"),
+        contentType: z
+          .string()
+          .optional()
+          .describe("覆寫 Content-Type，預設自動判斷"),
+        timeout: z.number().optional().describe("逾時秒數，預設 120"),
+      },
+    },
+    async ({ method, path, body, contentType, timeout }) => {
+      if (body !== undefined) {
+        try {
+          JSON.parse(body);
+        } catch {
+          return {
+            content: [
+              { type: "text" as const, text: "body 不是合法的 JSON 字串。" },
+            ],
+            isError: true,
+          };
+        }
+      }
+      const outcome = await adoRest(io, executeFn, defaults, {
+        method: method as RestMethod,
+        path,
+        body,
+        contentType,
+        timeoutMs: (timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+      });
+      return restToolResult(outcome);
     },
   );
 
