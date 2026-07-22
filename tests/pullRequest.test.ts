@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  createPullRequestComment,
   getPullRequestChanges,
   listPullRequestWorkItems,
   prBasePath,
@@ -138,5 +139,92 @@ describe("getPullRequestChanges", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("404");
+  });
+});
+
+describe("createPullRequestComment", () => {
+  function makeBodyCapturingIo() {
+    const requests: Array<{ url: string; body: unknown }> = [];
+    const io: RestIo = {
+      fetchFn: (async (url: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({
+          url: String(url),
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response('{"id":148}', { status: 200 });
+      }) as typeof fetch,
+      env: { AZURE_DEVOPS_EXT_PAT: "pat" },
+    };
+    return { io, requests };
+  }
+
+  test("無 threadId 時 POST 新 thread，預設 status active", async () => {
+    const { io, requests } = makeBodyCapturingIo();
+    const result = await createPullRequestComment(
+      io, noopExecutor, BUILT_IN_DEFAULTS,
+      { prNumber: 104117, content: "看起來不錯" },
+    );
+    expect(result.ok).toBe(true);
+    expect(requests[0]?.url).toBe(
+      `${ORG}/MS/_apis/git/repositories/MS-Web/pullRequests/104117/threads?api-version=7.1`,
+    );
+    expect(requests[0]?.body).toEqual({
+      comments: [{ parentCommentId: 0, content: "看起來不錯", commentType: 1 }],
+      status: "active",
+    });
+  });
+
+  test("帶 filePath 與 line 時組出 threadContext（filePath 自動補 /）", async () => {
+    const { io, requests } = makeBodyCapturingIo();
+    await createPullRequestComment(
+      io, noopExecutor, BUILT_IN_DEFAULTS,
+      { prNumber: 1, content: "c", filePath: "src/a.cs", line: 5 },
+    );
+    expect(requests[0]?.body).toEqual({
+      comments: [{ parentCommentId: 0, content: "c", commentType: 1 }],
+      status: "active",
+      threadContext: {
+        filePath: "/src/a.cs",
+        rightFileStart: { line: 5, offset: 1 },
+        rightFileEnd: { line: 5, offset: 1 },
+      },
+    });
+  });
+
+  test("有 threadId 時 POST 回覆到該 thread", async () => {
+    const { io, requests } = makeBodyCapturingIo();
+    await createPullRequestComment(
+      io, noopExecutor, BUILT_IN_DEFAULTS,
+      { prNumber: 1, content: "回覆", threadId: 148 },
+    );
+    expect(requests[0]?.url).toBe(
+      `${ORG}/MS/_apis/git/repositories/MS-Web/pullRequests/1/threads/148/comments?api-version=7.1`,
+    );
+    expect(requests[0]?.body).toEqual({
+      content: "回覆",
+      parentCommentId: 0,
+      commentType: 1,
+    });
+  });
+
+  test("content 空白時拒絕", async () => {
+    const { io, requests } = makeBodyCapturingIo();
+    const result = await createPullRequestComment(
+      io, noopExecutor, BUILT_IN_DEFAULTS,
+      { prNumber: 1, content: "   " },
+    );
+    expect(result.ok).toBe(false);
+    expect(requests).toHaveLength(0);
+  });
+
+  test("只給 line 沒給 filePath 時拒絕", async () => {
+    const { io, requests } = makeBodyCapturingIo();
+    const result = await createPullRequestComment(
+      io, noopExecutor, BUILT_IN_DEFAULTS,
+      { prNumber: 1, content: "c", line: 5 },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("filePath");
+    expect(requests).toHaveLength(0);
   });
 });
