@@ -51,14 +51,21 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
 }
 
 describe("azure-devops-cli-mcp server", () => {
-  test("列出三個工具", async () => {
+  test("列出十個工具", async () => {
     const { fake } = makeFakeExecutor();
     const client = await connect(fake);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "az_devops",
       "az_devops_help",
+      "az_pr_changes",
+      "az_pr_comment",
+      "az_pr_show",
+      "az_pr_workitems",
+      "az_rest",
       "az_workitem_attach",
+      "az_workitem_relations",
+      "az_workitem_update",
     ]);
   });
 
@@ -353,5 +360,145 @@ describe("azure-devops-cli-mcp server", () => {
     const attach = tools.find((t) => t.name === "az_workitem_attach");
     expect(attach?.description).toContain("https://dev.azure.com/SKMHHIS");
     expect(attach?.description).toContain("MS");
+  });
+});
+
+describe("REST 工具整合", () => {
+  function makeRestIo(
+    handler: (url: string, init?: RequestInit) => Response,
+  ) {
+    const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const io: AttachmentIo = {
+      readFile: async () => {
+        throw new Error("not used");
+      },
+      fetchFn: (async (url: RequestInfo | URL, init?: RequestInit) => {
+        requests.push({ url: String(url), init });
+        return handler(String(url), init);
+      }) as typeof fetch,
+      env: { AZURE_DEVOPS_EXT_PAT: "pat" },
+    };
+    return { io, requests };
+  }
+
+  test("az_pr_show 以預設 project/repository 組 URL", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io, requests } = makeRestIo(
+      () => new Response('{"pullRequestId":104117}', { status: 200 }),
+    );
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_pr_show",
+      arguments: { prNumber: 104117 },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toContain("104117");
+    expect(requests[0]?.url).toBe(
+      "https://dev.azure.com/SKMHHIS/MS/_apis/git/repositories/MS-Web/pullRequests/104117?api-version=7.1",
+    );
+  });
+
+  test("az_pr_changes 未指定 iteration 時自動取最新", async () => {
+    const { fake } = makeFakeExecutor();
+    const responses = [
+      new Response('{"value":[{"id":1},{"id":4}]}', { status: 200 }),
+      new Response('{"changeEntries":[]}', { status: 200 }),
+    ];
+    const { io, requests } = makeRestIo(() => responses.shift()!);
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_pr_changes",
+      arguments: { prNumber: 104117 },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toContain("[iterationId: 4]");
+    expect(requests[1]?.url).toContain("/iterations/4/changes");
+  });
+
+  test("az_workitem_relations 走 org 層級端點", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io, requests } = makeRestIo(
+      () => new Response('{"id":42,"relations":[]}', { status: 200 }),
+    );
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_workitem_relations",
+      arguments: { workItemId: 42 },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(requests[0]?.url).toBe(
+      "https://dev.azure.com/SKMHHIS/_apis/wit/workitems/42?$expand=relations&api-version=7.1",
+    );
+  });
+
+  test("az_pr_comment 建立新 thread", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io, requests } = makeRestIo(
+      () => new Response('{"id":148}', { status: 200 }),
+    );
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_pr_comment",
+      arguments: { prNumber: 104117, content: "審查意見" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(requests[0]?.url).toContain("/pullRequests/104117/threads?");
+    const body = JSON.parse(String(requests[0]?.init?.body));
+    expect(body.comments[0].content).toBe("審查意見");
+  });
+
+  test("az_workitem_update 缺 fields 與 historyComment 時拒絕", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io, requests } = makeRestIo(
+      () => new Response("{}", { status: 200 }),
+    );
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_workitem_update",
+      arguments: { workItemId: 42 },
+    });
+    expect(result.isError).toBe(true);
+    expect(requests).toHaveLength(0);
+  });
+
+  test("az_rest 拒絕絕對 URL", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io, requests } = makeRestIo(
+      () => new Response("{}", { status: 200 }),
+    );
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_rest",
+      arguments: { method: "GET", path: "https://evil.example.com/x" },
+    });
+    expect(result.isError).toBe(true);
+    expect(requests).toHaveLength(0);
+  });
+
+  test("az_rest 拒絕不合法 JSON body", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io, requests } = makeRestIo(
+      () => new Response("{}", { status: 200 }),
+    );
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_rest",
+      arguments: { method: "POST", path: "MS/_apis/x", body: "not json {" },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("JSON");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("az_rest 認證失敗回傳提示", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io } = makeRestIo(() => new Response("denied", { status: 401 }));
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_rest",
+      arguments: { method: "GET", path: "MS/_apis/x" },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("az login");
   });
 });
