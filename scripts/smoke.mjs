@@ -33,5 +33,13 @@ const rejected = await client.callTool({
 console.log("isError:", rejected.isError ?? false);
 console.log(rejected.content[0].text);
 
+console.log("\n--- az_rest: GET _apis/projects ---");
+const rest = await client.callTool({
+  name: "az_rest",
+  arguments: { method: "GET", path: "_apis/projects" },
+});
+console.log("isError:", rest.isError ?? false);
+console.log(rest.content[0].text.slice(0, 300));
+
 await client.close();
 process.exit(0);
