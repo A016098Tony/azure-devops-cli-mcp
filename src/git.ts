@@ -25,6 +25,14 @@ export type BuildResult =
 const REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 // Windows 磁碟機（D:\ 或 D:/）、UNC（\\host）、POSIX（/）
 const ABSOLUTE_PATH_PATTERN = /^([A-Za-z]:[\\/]|\\\\|\/)/;
+// repoPath 允許空白、Unicode 目錄名稱、反斜線、磁碟機冒號等，
+// 但必須擋掉會被 shell（/bin/sh 或 cmd.exe）特殊解讀、可能導致指令注入的字元：
+// 反引號、$、&、|、;、<、>、(、)、%、!、雙引號，以及換行/回車（可拆出第二條指令列）。
+const SHELL_METACHAR_PATTERN = /["`$&|;<>()%!\r\n]/;
+// refspec / ls-remote pattern 允許的合法字元：字母、數字、. _ / : + * ~ ^ @ -
+// （開頭的 - 已由另一條檢查擋掉）。採用允許清單而非黑名單，
+// 因為 refspec/pattern 的合法字元集合是明確且有限的，允許清單天生比列舉危險字元更安全。
+const REF_ALLOWED_PATTERN = /^[A-Za-z0-9._/:+*~^@-]+$/;
 
 function validateCommon(
   repoPath: string,
@@ -38,7 +46,12 @@ function validateCommon(
       "請提供主機端的絕對路徑，例如 D:\\mygithub\\MS-Web。"
     );
   }
-  if (trimmedPath.includes('"')) return "repoPath 不可包含雙引號。";
+  if (SHELL_METACHAR_PATTERN.test(trimmedPath)) {
+    return (
+      "repoPath 不可包含雙引號或 shell 特殊字元" +
+      "（` $ & | ; < > ( ) % ! 或換行）。"
+    );
+  }
   if (!REMOTE_NAME_PATTERN.test(remote)) {
     return (
       `不合法的 remote 名稱「${remote}」。` +
@@ -48,11 +61,17 @@ function validateCommon(
   return undefined;
 }
 
-// refspec 與 ls-remote pattern 共用：擋 --upload-pack 這類可執行任意命令的選項
+// refspec 與 ls-remote pattern 共用：僅接受 git ref 名稱／refspec 的合法字元（允許清單），
+// 擋掉 --upload-pack 這類選項注入，以及任何 shell 特殊字元造成的指令注入。
 function validateRef(value: string, label: string): string | undefined {
   if (!value.trim()) return `${label} 不可為空白。`;
   if (value.startsWith("-")) return `${label} 不可以「-」開頭。`;
-  if (/[\s"]/.test(value)) return `${label} 不可包含空白或雙引號。`;
+  if (!REF_ALLOWED_PATTERN.test(value)) {
+    return (
+      `${label} 包含不合法的字元。` +
+      "只接受字母、數字與 . _ / : + * ~ ^ @ - 這些字元。"
+    );
+  }
   return undefined;
 }
 

@@ -74,6 +74,44 @@ describe("buildFetchCommand", () => {
       expect(result.ok, `refspec "${bad}" 應被拒絕`).toBe(false);
     }
   });
+
+  test("拒絕 shell metacharacter 注入的 refspec（command injection）", () => {
+    for (const bad of [
+      "$(id)",
+      "`touch pwned`",
+      "a&calc.exe",
+      "a|calc.exe",
+      "a;calc.exe",
+      "a>pwned.txt",
+      "a<pwned.txt",
+      "a(pwned)",
+      "a%pwned%",
+      "a!pwned",
+      "refs/heads/x\r\ncalc.exe",
+    ]) {
+      const result = buildFetchCommand({ repoPath: "D:\\repo", refspec: bad });
+      expect(result.ok, `refspec ${JSON.stringify(bad)} 應被拒絕`).toBe(false);
+    }
+  });
+
+  test("拒絕含 shell metacharacter 的 repoPath（command injection）", () => {
+    for (const bad of [
+      "D:\\repo$(id)",
+      "D:\\repo`touch pwned`",
+      "D:\\repo&calc.exe",
+      "D:\\repo|calc.exe",
+      "D:\\repo;calc.exe",
+      "D:\\repo>pwned.txt",
+      "D:\\repo<pwned.txt",
+      "D:\\repo(pwned)",
+      "D:\\repo%pwned%",
+      "D:\\repo!pwned",
+      "D:\\repo\r\ncalc.exe",
+    ]) {
+      const result = buildFetchCommand({ repoPath: bad });
+      expect(result.ok, `repoPath ${JSON.stringify(bad)} 應被拒絕`).toBe(false);
+    }
+  });
 });
 
 describe("buildLsRemoteCommand", () => {
@@ -109,6 +147,13 @@ describe("buildLsRemoteCommand", () => {
     expect(
       buildLsRemoteCommand({ repoPath: "D:\\repo", remote: "git@host:x" }).ok,
     ).toBe(false);
+  });
+
+  test("拒絕 shell metacharacter 注入的 pattern（command injection）", () => {
+    for (const bad of ["$(id)", "`touch pwned`", "a&calc.exe", "a|calc.exe"]) {
+      const result = buildLsRemoteCommand({ repoPath: "D:\\repo", pattern: bad });
+      expect(result.ok, `pattern ${JSON.stringify(bad)} 應被拒絕`).toBe(false);
+    }
   });
 });
 
