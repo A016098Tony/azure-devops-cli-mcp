@@ -22,6 +22,7 @@ import {
   showPullRequest,
 } from "./pullRequest.js";
 import { getWorkItemRelations, updateWorkItem } from "./workItem.js";
+import { gitFetch, gitLsRemote, type GitOutcome } from "./git.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const HELP_TIMEOUT_MS = 60_000;
@@ -76,6 +77,18 @@ function restToolResult(outcome: RestOutcome): ToolResult {
   };
 }
 
+function gitToolResult(outcome: GitOutcome): ToolResult {
+  if (!outcome.ok) {
+    return {
+      content: [{ type: "text", text: truncateOutput(outcome.error) }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: "text", text: truncateOutput(outcome.text) }],
+  };
+}
+
 async function executeWithInjection(
   executeFn: typeof execute,
   command: string,
@@ -97,7 +110,7 @@ export function createServer(
 ): McpServer {
   const server = new McpServer({
     name: "azure-devops-cli-mcp",
-    version: "0.4.0",
+    version: "0.5.0",
   });
 
   server.registerTool(
@@ -413,6 +426,92 @@ export function createServer(
       });
       return restToolResult(outcome);
     },
+  );
+
+  server.registerTool(
+    "az_git_fetch",
+    {
+      title: "Git Fetch (host-side)",
+      description:
+        "在主機端對本機 repo 執行 git fetch（唯讀網路操作，不動工作目錄）。" +
+        "典型情境：Cowork sandbox 內 git fetch 被 proxy 擋下（403）時，" +
+        "用此工具在主機端代跑；完成後 sandbox 內即可用本機 git 操作 origin/<branch>。" +
+        "不提供 push/pull 等寫入操作。",
+      inputSchema: {
+        repoPath: z
+          .string()
+          .describe(
+            "本機 repo 的「主機端」絕對路徑（例如 D:\\mygithub\\MS-Web；" +
+              "sandbox 內看到的路徑可能與主機不同）",
+          ),
+        remote: z
+          .string()
+          .optional()
+          .describe("遠端名稱，預設 origin（只接受 remote 名稱，不接受 URL）"),
+        refspec: z
+          .string()
+          .optional()
+          .describe(
+            '要 fetch 的分支或 refspec，例如 "releases/s116/rc-092"；' +
+              "未指定時 fetch 該 remote 的全部分支",
+          ),
+        prune: z
+          .boolean()
+          .optional()
+          .describe("加 --prune，清除遠端已刪除分支的追蹤 ref"),
+        timeout: z.number().optional().describe("逾時秒數，預設 120"),
+      },
+    },
+    async ({ repoPath, remote, refspec, prune, timeout }) =>
+      gitToolResult(
+        await gitFetch(executeFn, {
+          repoPath,
+          remote,
+          refspec,
+          prune,
+          timeoutMs: (timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "az_git_ls_remote",
+    {
+      title: "Git Ls-Remote (host-side)",
+      description:
+        "在主機端查詢本機 repo 的遠端 refs（git ls-remote，不下載物件）。" +
+        "適合在 fetch 前快速確認遠端分支是否存在，" +
+        "例如確認 releases/s116/rc-092 存在於 origin。",
+      inputSchema: {
+        repoPath: z
+          .string()
+          .describe(
+            "本機 repo 的「主機端」絕對路徑（例如 D:\\mygithub\\MS-Web）",
+          ),
+        remote: z
+          .string()
+          .optional()
+          .describe("遠端名稱，預設 origin（只接受 remote 名稱，不接受 URL）"),
+        pattern: z
+          .string()
+          .optional()
+          .describe('ref 過濾，例如 "releases/s116/rc-092"'),
+        heads: z.boolean().optional().describe("只列分支（--heads）"),
+        tags: z.boolean().optional().describe("只列 tag（--tags）"),
+        timeout: z.number().optional().describe("逾時秒數，預設 120"),
+      },
+    },
+    async ({ repoPath, remote, pattern, heads, tags, timeout }) =>
+      gitToolResult(
+        await gitLsRemote(executeFn, {
+          repoPath,
+          remote,
+          pattern,
+          heads,
+          tags,
+          timeoutMs: (timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+        }),
+      ),
   );
 
   return server;

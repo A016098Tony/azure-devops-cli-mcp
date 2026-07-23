@@ -51,13 +51,15 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
 }
 
 describe("azure-devops-cli-mcp server", () => {
-  test("列出十個工具", async () => {
+  test("列出十二個工具", async () => {
     const { fake } = makeFakeExecutor();
     const client = await connect(fake);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "az_devops",
       "az_devops_help",
+      "az_git_fetch",
+      "az_git_ls_remote",
       "az_pr_changes",
       "az_pr_comment",
       "az_pr_show",
@@ -500,5 +502,76 @@ describe("REST 工具整合", () => {
     });
     expect(result.isError).toBe(true);
     expect(textOf(result)).toContain("az login");
+  });
+});
+
+describe("git 工具整合", () => {
+  test("az_git_fetch 以 baseCommand git 執行且秒轉毫秒", async () => {
+    const { fake, calls } = makeFakeExecutor({
+      stderr: " * [new branch] rc-092 -> origin/rc-092",
+    });
+    const client = await connect(fake);
+    const result = await client.callTool({
+      name: "az_git_fetch",
+      arguments: {
+        repoPath: "D:\\mygithub\\MS-Web",
+        refspec: "releases/s116/rc-092",
+        timeout: 300,
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toContain("origin/rc-092");
+    expect(calls[0]?.commandLine).toBe(
+      '-C "D:\\mygithub\\MS-Web" fetch origin "releases/s116/rc-092"',
+    );
+    expect(calls[0]?.options?.baseCommand).toBe("git");
+    expect(calls[0]?.options?.timeoutMs).toBe(300_000);
+  });
+
+  test("az_git_fetch 驗證失敗時不執行且標記 isError", async () => {
+    const { fake, calls } = makeFakeExecutor();
+    const client = await connect(fake);
+    const result = await client.callTool({
+      name: "az_git_fetch",
+      arguments: { repoPath: "relative/path" },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("絕對路徑");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("az_git_ls_remote 組出正確命令", async () => {
+    const { fake, calls } = makeFakeExecutor({
+      stdout: "abc123\trefs/heads/releases/s116/rc-092\n",
+    });
+    const client = await connect(fake);
+    const result = await client.callTool({
+      name: "az_git_ls_remote",
+      arguments: {
+        repoPath: "D:\\mygithub\\MS-Web",
+        heads: true,
+        pattern: "releases/s116/rc-092",
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toContain("refs/heads/releases/s116/rc-092");
+    expect(calls[0]?.commandLine).toBe(
+      '-C "D:\\mygithub\\MS-Web" ls-remote --heads origin "releases/s116/rc-092"',
+    );
+    expect(calls[0]?.options?.baseCommand).toBe("git");
+  });
+
+  test("az_git_fetch git 失敗時回傳 stderr 並標記 isError", async () => {
+    const { fake } = makeFakeExecutor({
+      stderr: "fatal: Authentication failed",
+      exitCode: 128,
+    });
+    const client = await connect(fake);
+    const result = await client.callTool({
+      name: "az_git_fetch",
+      arguments: { repoPath: "D:\\repo" },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("credential");
   });
 });
