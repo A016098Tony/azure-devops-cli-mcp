@@ -41,5 +41,29 @@ const rest = await client.callTool({
 console.log("isError:", rest.isError ?? false);
 console.log(rest.content[0].text.slice(0, 300));
 
+console.log("\n--- az_git_ls_remote: 目前 repo 的 origin heads ---");
+const lsRemote = await client.callTool({
+  name: "az_git_ls_remote",
+  arguments: { repoPath: process.cwd(), heads: true },
+});
+console.log("isError:", lsRemote.isError ?? false);
+console.log(lsRemote.content[0].text.slice(0, 300));
+
+console.log("\n--- az_git_fetch: 目前 repo fetch origin ---");
+const fetchResult = await client.callTool({
+  name: "az_git_fetch",
+  arguments: { repoPath: process.cwd() },
+});
+console.log("isError:", fetchResult.isError ?? false);
+console.log(fetchResult.content[0].text.slice(0, 300));
+
+console.log("\n--- az_git_fetch: 相對路徑（應拒絕）---");
+const badPath = await client.callTool({
+  name: "az_git_fetch",
+  arguments: { repoPath: "relative/path" },
+});
+console.log("isError:", badPath.isError ?? false);
+console.log(badPath.content[0].text);
+
 await client.close();
 process.exit(0);
