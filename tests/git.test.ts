@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { buildFetchCommand, buildLsRemoteCommand } from "../src/git.js";
+import {
+  buildFetchCommand,
+  buildLsRemoteCommand,
+  gitFetch,
+  gitLsRemote,
+} from "../src/git.js";
+import type { ExecResult, ExecuteOptions } from "../src/executor.js";
 
 describe("buildFetchCommand", () => {
   test("預設 remote origin、無 refspec", () => {
@@ -103,5 +109,155 @@ describe("buildLsRemoteCommand", () => {
     expect(
       buildLsRemoteCommand({ repoPath: "D:\\repo", remote: "git@host:x" }).ok,
     ).toBe(false);
+  });
+});
+
+interface RecordedCall {
+  commandLine: string;
+  options: ExecuteOptions | undefined;
+}
+
+function makeFakeExecutor(result: Partial<ExecResult> = {}) {
+  const calls: RecordedCall[] = [];
+  const fake = (
+    commandLine: string,
+    options?: ExecuteOptions,
+  ): Promise<ExecResult> => {
+    calls.push({ commandLine, options });
+    return Promise.resolve({
+      stdout: "",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      ...result,
+    });
+  };
+  return { fake, calls };
+}
+
+describe("gitFetch", () => {
+  test("以 baseCommand git 與預設 timeout 執行", async () => {
+    const { fake, calls } = makeFakeExecutor({
+      stderr: " * [new branch] releases/s116/rc-092 -> origin/releases/s116/rc-092",
+    });
+    const result = await gitFetch(fake, {
+      repoPath: "D:\\repo",
+      refspec: "releases/s116/rc-092",
+    });
+    expect(result).toEqual({
+      ok: true,
+      text: "* [new branch] releases/s116/rc-092 -> origin/releases/s116/rc-092",
+    });
+    expect(calls[0]?.commandLine).toBe(
+      '-C "D:\\repo" fetch origin "releases/s116/rc-092"',
+    );
+    expect(calls[0]?.options?.baseCommand).toBe("git");
+    expect(calls[0]?.options?.timeoutMs).toBe(120_000);
+  });
+
+  test("自訂 timeoutMs 傳遞給 executor", async () => {
+    const { fake, calls } = makeFakeExecutor();
+    await gitFetch(fake, { repoPath: "D:\\repo", timeoutMs: 300_000 });
+    expect(calls[0]?.options?.timeoutMs).toBe(300_000);
+  });
+
+  test("成功且 stdout 與 stderr 都有輸出時合併回傳", async () => {
+    const { fake } = makeFakeExecutor({ stdout: "out", stderr: "err" });
+    const result = await gitFetch(fake, { repoPath: "D:\\repo" });
+    expect(result).toEqual({ ok: true, text: "out\nerr" });
+  });
+
+  test("成功但無輸出時回報無變更", async () => {
+    const { fake } = makeFakeExecutor();
+    const result = await gitFetch(fake, { repoPath: "D:\\repo" });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.text).toContain("無 ref 變更");
+  });
+
+  test("驗證失敗時不執行命令", async () => {
+    const { fake, calls } = makeFakeExecutor();
+    const result = await gitFetch(fake, {
+      repoPath: "D:\\repo",
+      refspec: "--upload-pack=calc",
+    });
+    expect(result.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("git 不存在時附安裝提示", async () => {
+    const { fake } = makeFakeExecutor({
+      stderr: "'git' is not recognized as an internal or external command",
+      exitCode: 1,
+    });
+    const result = await gitFetch(fake, { repoPath: "D:\\repo" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("安裝");
+  });
+
+  test("不是 git repo 時附 repoPath 提示", async () => {
+    const { fake } = makeFakeExecutor({
+      stderr: "fatal: not a git repository (or any of the parent directories)",
+      exitCode: 128,
+    });
+    const result = await gitFetch(fake, { repoPath: "D:\\repo" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("主機端的絕對路徑");
+  });
+
+  test("認證失敗時附 credential 提示", async () => {
+    const { fake } = makeFakeExecutor({
+      stderr: "fatal: Authentication failed for 'https://dev.azure.com/SKMHHIS/...'",
+      exitCode: 128,
+    });
+    const result = await gitFetch(fake, { repoPath: "D:\\repo" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("credential");
+  });
+
+  test("逾時回傳明確訊息", async () => {
+    const { fake } = makeFakeExecutor({ timedOut: true, exitCode: 1 });
+    const result = await gitFetch(fake, { repoPath: "D:\\repo" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("逾時");
+  });
+});
+
+describe("gitLsRemote", () => {
+  test("回傳 ref 清單", async () => {
+    const { fake, calls } = makeFakeExecutor({
+      stdout: "abc123\trefs/heads/releases/s116/rc-092\n",
+    });
+    const result = await gitLsRemote(fake, {
+      repoPath: "D:\\repo",
+      heads: true,
+      pattern: "releases/s116/rc-092",
+    });
+    expect(result).toEqual({
+      ok: true,
+      text: "abc123\trefs/heads/releases/s116/rc-092",
+    });
+    expect(calls[0]?.commandLine).toBe(
+      '-C "D:\\repo" ls-remote --heads origin "releases/s116/rc-092"',
+    );
+    expect(calls[0]?.options?.baseCommand).toBe("git");
+  });
+
+  test("無符合的 ref 時明確回報", async () => {
+    const { fake } = makeFakeExecutor({ stdout: "" });
+    const result = await gitLsRemote(fake, {
+      repoPath: "D:\\repo",
+      pattern: "no-such-branch",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.text).toContain("沒有符合的 ref");
+  });
+
+  test("驗證失敗時不執行命令", async () => {
+    const { fake, calls } = makeFakeExecutor();
+    const result = await gitLsRemote(fake, {
+      repoPath: "relative/path",
+    });
+    expect(result.ok).toBe(false);
+    expect(calls).toHaveLength(0);
   });
 });

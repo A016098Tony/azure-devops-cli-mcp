@@ -1,3 +1,5 @@
+import type { execute, ExecResult } from "./executor.js";
+
 export interface GitFetchParams {
   repoPath: string;
   remote?: string;
@@ -82,4 +84,78 @@ export function buildLsRemoteCommand(params: GitLsRemoteParams): BuildResult {
   command += ` ${remote}`;
   if (params.pattern !== undefined) command += ` "${params.pattern}"`;
   return { ok: true, command };
+}
+
+export type GitOutcome =
+  | { ok: true; text: string }
+  | { ok: false; error: string };
+
+const DEFAULT_GIT_TIMEOUT_MS = 120_000;
+
+function mapGitFailure(result: ExecResult): string {
+  if (result.timedOut) {
+    return (
+      "git 命令執行逾時，子程序已終止。" +
+      "可調高 timeout 參數，或先用 az_git_ls_remote 確認遠端可連線。"
+    );
+  }
+  let text =
+    result.stderr || result.stdout || `git 命令失敗，結束碼 ${result.exitCode}。`;
+  if (/'git' is not recognized|git: command not found/i.test(text)) {
+    text +=
+      "\n\n找不到 git。請先在主機安裝 Git：https://git-scm.com/downloads。";
+  } else if (/not a git repository|cannot change to/i.test(text)) {
+    text +=
+      "\n\n請確認 repoPath 是主機端的絕對路徑" +
+      "（sandbox 內看到的路徑可能與主機不同）。";
+  } else if (
+    /authentication failed|could not read username|403/i.test(text)
+  ) {
+    text +=
+      "\n\n請確認主機端 git credential（如 Git Credential Manager）" +
+      "可正常存取該遠端。";
+  }
+  return text;
+}
+
+function mergedOutput(result: ExecResult): string {
+  return [result.stdout, result.stderr]
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+export async function gitFetch(
+  executeFn: typeof execute,
+  params: GitFetchParams,
+): Promise<GitOutcome> {
+  const built = buildFetchCommand(params);
+  if (!built.ok) return built;
+  const result = await executeFn(built.command, {
+    timeoutMs: params.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+    baseCommand: "git",
+  });
+  if (result.timedOut || result.exitCode !== 0) {
+    return { ok: false, error: mapGitFailure(result) };
+  }
+  // git fetch 的 ref 更新訊息輸出在 stderr，需合併回傳
+  const text = mergedOutput(result);
+  return { ok: true, text: text || "fetch 完成（無 ref 變更）。" };
+}
+
+export async function gitLsRemote(
+  executeFn: typeof execute,
+  params: GitLsRemoteParams,
+): Promise<GitOutcome> {
+  const built = buildLsRemoteCommand(params);
+  if (!built.ok) return built;
+  const result = await executeFn(built.command, {
+    timeoutMs: params.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+    baseCommand: "git",
+  });
+  if (result.timedOut || result.exitCode !== 0) {
+    return { ok: false, error: mapGitFailure(result) };
+  }
+  const text = result.stdout.trim();
+  return { ok: true, text: text || "遠端沒有符合的 ref。" };
 }
