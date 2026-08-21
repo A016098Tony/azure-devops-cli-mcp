@@ -1,0 +1,141 @@
+// 只接受 remote 名稱（如 origin、upstream），擋掉 URL 與 - 開頭的選項注入
+const REMOTE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// Windows 磁碟機（D:\ 或 D:/）、UNC（\\host）、POSIX（/）
+const ABSOLUTE_PATH_PATTERN = /^([A-Za-z]:[\\/]|\\\\|\/)/;
+// repoPath 允許空白、Unicode 目錄名稱、反斜線、磁碟機冒號等，
+// 但必須擋掉會被 shell（/bin/sh 或 cmd.exe）特殊解讀、可能導致指令注入的字元：
+// 反引號、$、&、|、;、<、>、(、)、%、!、雙引號，以及換行/回車（可拆出第二條指令列）。
+const SHELL_METACHAR_PATTERN = /["`$&|;<>()%!\r\n]/;
+// refspec / ls-remote pattern 允許的合法字元：任何語言的字母與數字（\p{L}\p{N}，
+// 涵蓋中文等非 ASCII 分支名）、. _ / : + * ~ ^ @ -（開頭的 - 已由另一條檢查擋掉）。
+// 採用允許清單而非黑名單，因為 refspec/pattern 的合法字元集合是明確且有限的，
+// 允許清單天生比列舉危險字元更安全；shell metacharacter 都是 ASCII 符號，
+// 不落在 \p{L}\p{N} 內，注入防護不受影響。
+const REF_ALLOWED_PATTERN = /^[\p{L}\p{N}._/:+*~^@-]+$/u;
+function validateCommon(repoPath, remote) {
+    const trimmedPath = repoPath.trim();
+    if (!trimmedPath)
+        return "repoPath 不可為空。";
+    if (!ABSOLUTE_PATH_PATTERN.test(trimmedPath)) {
+        return (`repoPath「${repoPath}」不是絕對路徑。` +
+            "請提供主機端的絕對路徑，例如 D:\\mygithub\\MS-Web。");
+    }
+    if (SHELL_METACHAR_PATTERN.test(trimmedPath)) {
+        return ("repoPath 不可包含雙引號或 shell 特殊字元" +
+            "（` $ & | ; < > ( ) % ! 或換行）。");
+    }
+    if (!REMOTE_NAME_PATTERN.test(remote)) {
+        return (`不合法的 remote 名稱「${remote}」。` +
+            "只接受已設定的 remote 名稱（如 origin），不接受 URL 或選項。");
+    }
+    return undefined;
+}
+// refspec 與 ls-remote pattern 共用：僅接受 git ref 名稱／refspec 的合法字元（允許清單），
+// 擋掉 --upload-pack 這類選項注入，以及任何 shell 特殊字元造成的指令注入。
+function validateRef(value, label) {
+    if (!value.trim())
+        return `${label} 不可為空白。`;
+    if (value.startsWith("-"))
+        return `${label} 不可以「-」開頭。`;
+    if (!REF_ALLOWED_PATTERN.test(value)) {
+        return (`${label} 包含不合法的字元。` +
+            "只接受字母、數字（含中文等 Unicode）與 . _ / : + * ~ ^ @ - 這些字元。");
+    }
+    return undefined;
+}
+export function buildFetchCommand(params) {
+    const remote = params.remote ?? "origin";
+    const commonError = validateCommon(params.repoPath, remote);
+    if (commonError)
+        return { ok: false, error: commonError };
+    if (params.refspec !== undefined) {
+        const refError = validateRef(params.refspec, "refspec");
+        if (refError)
+            return { ok: false, error: refError };
+    }
+    let command = `-C "${params.repoPath.trim()}" fetch ${remote}`;
+    if (params.refspec !== undefined)
+        command += ` "${params.refspec}"`;
+    if (params.prune)
+        command += " --prune";
+    return { ok: true, command };
+}
+export function buildLsRemoteCommand(params) {
+    const remote = params.remote ?? "origin";
+    const commonError = validateCommon(params.repoPath, remote);
+    if (commonError)
+        return { ok: false, error: commonError };
+    const patterns = params.patterns ?? [];
+    for (const [index, pattern] of patterns.entries()) {
+        const patternError = validateRef(pattern, `patterns[${index}]`);
+        if (patternError)
+            return { ok: false, error: patternError };
+    }
+    let command = `-C "${params.repoPath.trim()}" ls-remote`;
+    if (params.heads)
+        command += " --heads";
+    if (params.tags)
+        command += " --tags";
+    command += ` ${remote}`;
+    for (const pattern of patterns)
+        command += ` "${pattern}"`;
+    return { ok: true, command };
+}
+const DEFAULT_GIT_TIMEOUT_MS = 120_000;
+function mapGitFailure(result) {
+    if (result.timedOut) {
+        return ("git 命令執行逾時，子程序已終止。" +
+            "可調高 timeout 參數，或先用 az_git_ls_remote 確認遠端可連線。");
+    }
+    let text = result.stderr || result.stdout || `git 命令失敗，結束碼 ${result.exitCode}。`;
+    if (/'git' is not recognized|git: command not found/i.test(text)) {
+        text +=
+            "\n\n找不到 git。請先在主機安裝 Git：https://git-scm.com/downloads。";
+    }
+    else if (/not a git repository|cannot change to/i.test(text)) {
+        text +=
+            "\n\n請確認 repoPath 是主機端的絕對路徑" +
+                "（sandbox 內看到的路徑可能與主機不同）。";
+    }
+    else if (/authentication failed|could not read username|403/i.test(text)) {
+        text +=
+            "\n\n請確認主機端 git credential（如 Git Credential Manager）" +
+                "可正常存取該遠端。";
+    }
+    return text;
+}
+function mergedOutput(result) {
+    return [result.stdout, result.stderr]
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join("\n");
+}
+export async function gitFetch(executeFn, params) {
+    const built = buildFetchCommand(params);
+    if (!built.ok)
+        return built;
+    const result = await executeFn(built.command, {
+        timeoutMs: params.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+        baseCommand: "git",
+    });
+    if (result.timedOut || result.exitCode !== 0) {
+        return { ok: false, error: mapGitFailure(result) };
+    }
+    // git fetch 的 ref 更新訊息輸出在 stderr，需合併回傳
+    const text = mergedOutput(result);
+    return { ok: true, text: text || "fetch 完成（無 ref 變更）。" };
+}
+export async function gitLsRemote(executeFn, params) {
+    const built = buildLsRemoteCommand(params);
+    if (!built.ok)
+        return built;
+    const result = await executeFn(built.command, {
+        timeoutMs: params.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+        baseCommand: "git",
+    });
+    if (result.timedOut || result.exitCode !== 0) {
+        return { ok: false, error: mapGitFailure(result) };
+    }
+    const text = result.stdout.trim();
+    return { ok: true, text: text || "遠端沒有符合的 ref。" };
+}
