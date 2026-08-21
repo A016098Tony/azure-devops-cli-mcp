@@ -100,9 +100,10 @@ server 不儲存任何憑證。
 ### Git 工具
 
 `az_git_fetch` / `az_git_ls_remote` 在主機端執行 git 的唯讀網路操作，
-`repoPath` 必須是主機端的絕對路徑。參數經嚴格驗證：remote 只接受名稱
-（不接受 URL）、refspec/pattern 不可以 `-` 開頭（擋 `--upload-pack` 等
-危險選項）。不提供 push、pull 或任何寫入操作。認證使用主機端的
+`repoPath` 必須是主機端的絕對路徑。`az_git_ls_remote` 的 `patterns`
+可給多個 pattern，符合任一者的 ref 即列出（同原生 `git ls-remote`）。
+參數經嚴格驗證：remote 只接受名稱（不接受 URL）、refspec/patterns
+不可以 `-` 開頭（擋 `--upload-pack` 等危險選項）。不提供 push、pull 或任何寫入操作。認證使用主機端的
 git credential（如 Git Credential Manager）。
 
 ## 開發

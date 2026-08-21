@@ -550,13 +550,13 @@ describe("git 工具整合", () => {
       arguments: {
         repoPath: "D:\\mygithub\\MS-Web",
         heads: true,
-        pattern: "releases/s116/rc-092",
+        patterns: ["releases/s116/rc-092", "main"],
       },
     });
     expect(result.isError).toBeFalsy();
     expect(textOf(result)).toContain("refs/heads/releases/s116/rc-092");
     expect(calls[0]?.commandLine).toBe(
-      '-C "D:\\mygithub\\MS-Web" ls-remote --heads origin "releases/s116/rc-092"',
+      '-C "D:\\mygithub\\MS-Web" ls-remote --heads origin "releases/s116/rc-092" "main"',
     );
     expect(calls[0]?.options?.baseCommand).toBe("git");
   });

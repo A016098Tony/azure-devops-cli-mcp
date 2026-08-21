@@ -110,7 +110,7 @@ export function createServer(
 ): McpServer {
   const server = new McpServer({
     name: "azure-devops-cli-mcp",
-    version: "0.5.0",
+    version: "0.6.0",
   });
 
   server.registerTool(
@@ -492,21 +492,24 @@ export function createServer(
           .string()
           .optional()
           .describe("遠端名稱，預設 origin（只接受 remote 名稱，不接受 URL）"),
-        pattern: z
-          .string()
+        patterns: z
+          .array(z.string())
           .optional()
-          .describe('ref 過濾，例如 "releases/s116/rc-092"'),
+          .describe(
+            "ref 過濾，可給多個，符合任一者即列出，" +
+              '例如 ["releases/s116/rc-092", "hotfix/*"]',
+          ),
         heads: z.boolean().optional().describe("只列分支（--heads）"),
         tags: z.boolean().optional().describe("只列 tag（--tags）"),
         timeout: z.number().optional().describe("逾時秒數，預設 120"),
       },
     },
-    async ({ repoPath, remote, pattern, heads, tags, timeout }) =>
+    async ({ repoPath, remote, patterns, heads, tags, timeout }) =>
       gitToolResult(
         await gitLsRemote(executeFn, {
           repoPath,
           remote,
-          pattern,
+          patterns,
           heads,
           tags,
           timeoutMs: (timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,

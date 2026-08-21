@@ -122,13 +122,13 @@ describe("buildLsRemoteCommand", () => {
     });
   });
 
-  test("heads/tags 旗標與 pattern", () => {
+  test("heads/tags 旗標與單一 pattern", () => {
     expect(
       buildLsRemoteCommand({
         repoPath: "D:\\repo",
         heads: true,
         tags: true,
-        pattern: "releases/s116/rc-092",
+        patterns: ["releases/s116/rc-092"],
       }),
     ).toEqual({
       ok: true,
@@ -137,10 +137,42 @@ describe("buildLsRemoteCommand", () => {
     });
   });
 
+  test("多個 patterns 依序附加並各自加引號", () => {
+    expect(
+      buildLsRemoteCommand({
+        repoPath: "D:\\repo",
+        heads: true,
+        patterns: ["releases/*", "hotfix/*", "main"],
+      }),
+    ).toEqual({
+      ok: true,
+      command:
+        '-C "D:\\repo" ls-remote --heads origin "releases/*" "hotfix/*" "main"',
+    });
+  });
+
+  test("空的 patterns 陣列視同未提供", () => {
+    expect(
+      buildLsRemoteCommand({ repoPath: "D:\\repo", patterns: [] }),
+    ).toEqual({
+      ok: true,
+      command: '-C "D:\\repo" ls-remote origin',
+    });
+  });
+
   test("拒絕危險的 pattern（- 開頭）", () => {
     expect(
-      buildLsRemoteCommand({ repoPath: "D:\\repo", pattern: "--exec=x" }).ok,
+      buildLsRemoteCommand({ repoPath: "D:\\repo", patterns: ["--exec=x"] }).ok,
     ).toBe(false);
+  });
+
+  test("任一 pattern 不合法時整體報錯，並標明索引", () => {
+    const result = buildLsRemoteCommand({
+      repoPath: "D:\\repo",
+      patterns: ["releases/*", "--exec=x"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("patterns[1]");
   });
 
   test("拒絕不合法的 remote", () => {
@@ -151,7 +183,10 @@ describe("buildLsRemoteCommand", () => {
 
   test("拒絕 shell metacharacter 注入的 pattern（command injection）", () => {
     for (const bad of ["$(id)", "`touch pwned`", "a&calc.exe", "a|calc.exe"]) {
-      const result = buildLsRemoteCommand({ repoPath: "D:\\repo", pattern: bad });
+      const result = buildLsRemoteCommand({
+        repoPath: "D:\\repo",
+        patterns: [bad],
+      });
       expect(result.ok, `pattern ${JSON.stringify(bad)} 應被拒絕`).toBe(false);
     }
   });
@@ -275,7 +310,7 @@ describe("gitLsRemote", () => {
     const result = await gitLsRemote(fake, {
       repoPath: "D:\\repo",
       heads: true,
-      pattern: "releases/s116/rc-092",
+      patterns: ["releases/s116/rc-092"],
     });
     expect(result).toEqual({
       ok: true,
@@ -291,7 +326,7 @@ describe("gitLsRemote", () => {
     const { fake } = makeFakeExecutor({ stdout: "" });
     const result = await gitLsRemote(fake, {
       repoPath: "D:\\repo",
-      pattern: "no-such-branch",
+      patterns: ["no-such-branch"],
     });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.text).toContain("沒有符合的 ref");
