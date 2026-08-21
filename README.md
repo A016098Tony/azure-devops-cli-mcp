@@ -17,9 +17,12 @@ Claude 可透過它完整使用 `az devops`、`az repos`、`az boards`、`az pip
 npm install -g git+https://github.com/A016098Tony/azure-devops-cli-mcp.git
 ```
 
-repo 內已含編譯好的 `dist/`，安裝時不需要編譯（也因此不受
-npm 11 全域安裝 git 套件時 `prepare` 拿不到 devDependencies 的 bug 影響）。
-更新版本時重跑同一行命令即可。
+repo 內已含編譯好的 `dist/`，安裝時不需要編譯。更新版本時重跑同一行命令即可。
+
+> 註：script 刻意不叫 `build`／`prepare`——npm 11 全域安裝 git 套件時，
+> 只要 package.json 有 `build`/`prepare`/`prepack`/`install` 類 script
+> 就會觸發安裝端編譯，且因 `npm_config_global` 洩漏到內層 npm 而失敗。
+> 命名為 `compile` 可讓安裝流程完全跳過編譯步驟。
 
 ## Claude Desktop 設定
 
@@ -116,5 +119,5 @@ npm test              # vitest 單元 + 整合測試（不需要 az）
 node scripts/smoke.mjs  # 實機煙霧測試（需要 az login）
 ```
 
-改動 `src/` 後務必執行 `npm run build` 並把 `dist/` 一起 commit——
-安裝端直接使用 repo 內的 `dist/`，忘記 rebuild 會讓使用者裝到舊版行為。
+改動 `src/` 後務必執行 `npm run compile` 並把 `dist/` 一起 commit——
+安裝端直接使用 repo 內的 `dist/`，忘記重新編譯會讓使用者裝到舊版行為。

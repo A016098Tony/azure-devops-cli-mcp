@@ -7,7 +7,7 @@
     "azure-devops-cli-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "compile": "tsc",
     "test": "vitest run"
   },
   "dependencies": {
