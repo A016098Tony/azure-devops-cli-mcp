@@ -11,7 +11,7 @@ export interface GitFetchParams {
 export interface GitLsRemoteParams {
   repoPath: string;
   remote?: string;
-  pattern?: string;
+  patterns?: string[];
   heads?: boolean;
   tags?: boolean;
   timeoutMs?: number;
@@ -93,15 +93,16 @@ export function buildLsRemoteCommand(params: GitLsRemoteParams): BuildResult {
   const remote = params.remote ?? "origin";
   const commonError = validateCommon(params.repoPath, remote);
   if (commonError) return { ok: false, error: commonError };
-  if (params.pattern !== undefined) {
-    const patternError = validateRef(params.pattern, "pattern");
+  const patterns = params.patterns ?? [];
+  for (const [index, pattern] of patterns.entries()) {
+    const patternError = validateRef(pattern, `patterns[${index}]`);
     if (patternError) return { ok: false, error: patternError };
   }
   let command = `-C "${params.repoPath.trim()}" ls-remote`;
   if (params.heads) command += " --heads";
   if (params.tags) command += " --tags";
   command += ` ${remote}`;
-  if (params.pattern !== undefined) command += ` "${params.pattern}"`;
+  for (const pattern of patterns) command += ` "${pattern}"`;
   return { ok: true, command };
 }
 
