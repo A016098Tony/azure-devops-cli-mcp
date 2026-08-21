@@ -1,14 +1,13 @@
 {
   "name": "azure-devops-cli-mcp",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Local MCP server bridging Claude Desktop/Cowork to the Azure DevOps CLI",
   "type": "module",
   "bin": {
     "azure-devops-cli-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
-    "prepare": "npm run build",
+    "compile": "tsc",
     "test": "vitest run"
   },
   "dependencies": {
