@@ -29,10 +29,12 @@ const ABSOLUTE_PATH_PATTERN = /^([A-Za-z]:[\\/]|\\\\|\/)/;
 // 但必須擋掉會被 shell（/bin/sh 或 cmd.exe）特殊解讀、可能導致指令注入的字元：
 // 反引號、$、&、|、;、<、>、(、)、%、!、雙引號，以及換行/回車（可拆出第二條指令列）。
 const SHELL_METACHAR_PATTERN = /["`$&|;<>()%!\r\n]/;
-// refspec / ls-remote pattern 允許的合法字元：字母、數字、. _ / : + * ~ ^ @ -
-// （開頭的 - 已由另一條檢查擋掉）。採用允許清單而非黑名單，
-// 因為 refspec/pattern 的合法字元集合是明確且有限的，允許清單天生比列舉危險字元更安全。
-const REF_ALLOWED_PATTERN = /^[A-Za-z0-9._/:+*~^@-]+$/;
+// refspec / ls-remote pattern 允許的合法字元：任何語言的字母與數字（\p{L}\p{N}，
+// 涵蓋中文等非 ASCII 分支名）、. _ / : + * ~ ^ @ -（開頭的 - 已由另一條檢查擋掉）。
+// 採用允許清單而非黑名單，因為 refspec/pattern 的合法字元集合是明確且有限的，
+// 允許清單天生比列舉危險字元更安全；shell metacharacter 都是 ASCII 符號，
+// 不落在 \p{L}\p{N} 內，注入防護不受影響。
+const REF_ALLOWED_PATTERN = /^[\p{L}\p{N}._/:+*~^@-]+$/u;
 
 function validateCommon(
   repoPath: string,
@@ -69,7 +71,7 @@ function validateRef(value: string, label: string): string | undefined {
   if (!REF_ALLOWED_PATTERN.test(value)) {
     return (
       `${label} 包含不合法的字元。` +
-      "只接受字母、數字與 . _ / : + * ~ ^ @ - 這些字元。"
+      "只接受字母、數字（含中文等 Unicode）與 . _ / : + * ~ ^ @ - 這些字元。"
     );
   }
   return undefined;

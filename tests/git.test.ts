@@ -50,6 +50,18 @@ describe("buildFetchCommand", () => {
     ).toBe(true);
   });
 
+  test("含中文等非 ASCII 字母的 refspec 可通過", () => {
+    expect(
+      buildFetchCommand({
+        repoPath: "D:\\repo",
+        refspec: "feature/中文分支",
+      }),
+    ).toEqual({
+      ok: true,
+      command: '-C "D:\\repo" fetch origin "feature/中文分支"',
+    });
+  });
+
   test("拒絕空白與相對路徑的 repoPath", () => {
     for (const bad of ["", "   ", "repo", ".\\repo", "..\\repo"]) {
       const result = buildFetchCommand({ repoPath: bad });
@@ -148,6 +160,20 @@ describe("buildLsRemoteCommand", () => {
       ok: true,
       command:
         '-C "D:\\repo" ls-remote --heads origin "releases/*" "hotfix/*" "main"',
+    });
+  });
+
+  test("含中文等非 ASCII 字母的 pattern 可通過", () => {
+    expect(
+      buildLsRemoteCommand({
+        repoPath: "D:\\repo",
+        heads: true,
+        patterns: ["feature/中文分支", "releases/*"],
+      }),
+    ).toEqual({
+      ok: true,
+      command:
+        '-C "D:\\repo" ls-remote --heads origin "feature/中文分支" "releases/*"',
     });
   });
 

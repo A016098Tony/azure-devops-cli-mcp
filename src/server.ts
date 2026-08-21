@@ -110,7 +110,7 @@ export function createServer(
 ): McpServer {
   const server = new McpServer({
     name: "azure-devops-cli-mcp",
-    version: "0.6.0",
+    version: "0.6.1",
   });
 
   server.registerTool(
