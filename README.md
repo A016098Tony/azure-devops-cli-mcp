@@ -73,7 +73,7 @@ server 會自動補上這些預設值；命令中明確指定時以命令為準�
 | `az_devops` | 執行任意 DevOps 家族命令，例如 `repos pr list --status active`。未指定輸出格式時自動用 JSON。 |
 | `az_devops_help` | 查詢命令語法，等同 `az <command> --help`。 |
 | `az_workitem_attach` | 上傳本機檔案為 work item 附件並建立連結（文字與 binary 皆可，上限 100MB）。例如把 code review 報告或錯誤截圖附到 work item。 |
-| `az_pr_show` | 取得 PR 完整資訊（REST），含 source/target branch 與狀態。 |
+| `az_pr_show` | 取得 PR 完整資訊（REST），含 source/target branch 與狀態，並預設一併回傳關聯 work item（`workItemRefs`）；可用 `includeWorkItemRefs: false` 關閉。 |
 | `az_pr_changes` | 取得 PR 異動檔案清單（REST iterations/changes），自動使用最新 iteration。 |
 | `az_pr_workitems` | 取得 PR 關聯的 work item 清單（REST）。 |
 | `az_workitem_relations` | 取得 work item 含 relations（REST，$expand=relations），可檢查附件重名。 |

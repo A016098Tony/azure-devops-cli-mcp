@@ -65,6 +65,39 @@ describe("showPullRequest", () => {
       `${ORG}/MS/_apis/git/repositories/MS-Web/pullRequests/104117?api-version=7.1`,
     );
   });
+
+  test("includeWorkItemRefs 時帶上查詢參數", async () => {
+    const { io, urls } = makeIo([
+      () =>
+        new Response(
+          '{"pullRequestId":104117,"workItemRefs":[{"id":"160708"}]}',
+          { status: 200 },
+        ),
+    ]);
+    const result = await showPullRequest(io, noopExecutor, BUILT_IN_DEFAULTS, {
+      prNumber: 104117,
+      includeWorkItemRefs: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.text).toContain("workItemRefs");
+    expect(urls[0]).toBe(
+      `${ORG}/MS/_apis/git/repositories/MS-Web/pullRequests/104117` +
+        `?includeWorkItemRefs=true&api-version=7.1`,
+    );
+  });
+
+  test("includeWorkItemRefs 為 false 時不帶查詢參數", async () => {
+    const { io, urls } = makeIo([
+      () => new Response('{"pullRequestId":104117}', { status: 200 }),
+    ]);
+    await showPullRequest(io, noopExecutor, BUILT_IN_DEFAULTS, {
+      prNumber: 104117,
+      includeWorkItemRefs: false,
+    });
+    expect(urls[0]).toBe(
+      `${ORG}/MS/_apis/git/repositories/MS-Web/pullRequests/104117?api-version=7.1`,
+    );
+  });
 });
 
 describe("listPullRequestWorkItems", () => {
