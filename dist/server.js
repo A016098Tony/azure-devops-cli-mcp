@@ -77,7 +77,7 @@ async function executeWithInjection(executeFn, command, injected, options) {
 export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, io = { readFile, fetchFn: fetch, env: process.env }) {
     const server = new McpServer({
         name: "azure-devops-cli-mcp",
-        version: "0.6.2",
+        version: "0.7.0",
     });
     server.registerTool("az_devops", {
         title: "Azure DevOps CLI",
@@ -174,10 +174,18 @@ export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, 
     server.registerTool("az_pr_show", {
         title: "Show Pull Request",
         description: "以 REST API 取得 PR 完整資訊（title、sourceRefName、targetRefName、status 等）。" +
+            "預設一併回傳 workItemRefs（關聯 work item 的 id 與 url），" +
+            "因此不需要再呼叫 az_pr_workitems；注意 id 為字串，" +
+            "要傳給 az_workitem_attach 時需轉成數字。" +
             `預設 organization 為 ${defaults.organization}、project 為 ${defaults.project}、` +
             `repository 為 ${defaults.repository}。`,
         inputSchema: {
             prNumber: prNumberSchema,
+            includeWorkItemRefs: z
+                .boolean()
+                .optional()
+                .default(true)
+                .describe("是否一併回傳關聯 work item（workItemRefs），預設 true"),
             project: projectSchema,
             repository: repositorySchema,
         },

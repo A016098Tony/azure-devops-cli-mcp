@@ -20,11 +20,13 @@ export function showPullRequest(
   io: RestIo,
   executeFn: typeof execute,
   defaults: Defaults,
-  target: PrTarget,
+  target: PrTarget & { includeWorkItemRefs?: boolean },
 ): Promise<RestOutcome> {
+  // 查詢參數只能加在這裡，不能併進 prBasePath——其他端點會在 base 後面接路徑
+  const query = target.includeWorkItemRefs ? "?includeWorkItemRefs=true" : "";
   return adoRest(io, executeFn, defaults, {
     method: "GET",
-    path: prBasePath(defaults, target),
+    path: `${prBasePath(defaults, target)}${query}`,
   });
 }
 

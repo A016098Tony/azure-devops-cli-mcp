@@ -383,7 +383,7 @@ describe("REST 工具整合", () => {
     return { io, requests };
   }
 
-  test("az_pr_show 以預設 project/repository 組 URL", async () => {
+  test("az_pr_show 以預設 project/repository 組 URL 並預設帶 workItemRefs", async () => {
     const { fake } = makeFakeExecutor();
     const { io, requests } = makeRestIo(
       () => new Response('{"pullRequestId":104117}', { status: 200 }),
@@ -395,6 +395,23 @@ describe("REST 工具整合", () => {
     });
     expect(result.isError).toBeFalsy();
     expect(textOf(result)).toContain("104117");
+    expect(requests[0]?.url).toBe(
+      "https://dev.azure.com/SKMHHIS/MS/_apis/git/repositories/MS-Web/pullRequests/104117" +
+        "?includeWorkItemRefs=true&api-version=7.1",
+    );
+  });
+
+  test("az_pr_show 可用 includeWorkItemRefs=false 關閉", async () => {
+    const { fake } = makeFakeExecutor();
+    const { io, requests } = makeRestIo(
+      () => new Response('{"pullRequestId":104117}', { status: 200 }),
+    );
+    const client = await connect(fake, BUILT_IN_DEFAULTS, io);
+    const result = await client.callTool({
+      name: "az_pr_show",
+      arguments: { prNumber: 104117, includeWorkItemRefs: false },
+    });
+    expect(result.isError).toBeFalsy();
     expect(requests[0]?.url).toBe(
       "https://dev.azure.com/SKMHHIS/MS/_apis/git/repositories/MS-Web/pullRequests/104117?api-version=7.1",
     );
