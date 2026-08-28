@@ -44,7 +44,34 @@ Claude Desktop → Settings → Developer → Edit Config 開啟），在 `mcpSe
 此設定檔 Claude Desktop（含 Cowork）與 Claude Code 共用同一格式。
 claude.ai 網頁版不支援本機 stdio MCP server。
 
-### 啟動參數
+## Claude Code 專案設定
+
+在專案根目錄建立 `.mcp.json`，讓團隊成員 clone 後即可使用：
+
+```json
+{
+  "mcpServers": {
+    "azure-devops-cli": {
+      "type": "stdio",
+      "command": "azure-devops-cli-mcp",
+      "args": ["--project", "MS", "--repository", "MS-Web"],
+      "env": {}
+    }
+  }
+}
+```
+
+再於 `.claude/settings.json` 加入以下設定，略過首次使用時的信任確認：
+
+```json
+{
+  "enabledMcpjsonServers": ["azure-devops-cli"]
+}
+```
+
+兩個檔案都建議一起 commit。
+
+## 啟動參數
 
 三個參數皆選填，未指定時使用內建預設值：
 
