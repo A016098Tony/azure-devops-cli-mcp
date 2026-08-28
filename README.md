@@ -44,7 +44,7 @@ Claude Desktop → Settings → Developer → Edit Config 開啟），在 `mcpSe
 此設定檔 Claude Desktop（含 Cowork）與 Claude Code 共用同一格式。
 claude.ai 網頁版不支援本機 stdio MCP server。
 
-## Claude Code 專案設定
+## Claude Code 設定
 
 在專案根目錄建立 `.mcp.json`，讓團隊成員 clone 後即可使用：
 
