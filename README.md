@@ -100,10 +100,11 @@ server 會自動補上這些預設值；命令中明確指定時以命令為準�
 | `az_devops` | 執行任意 DevOps 家族命令，例如 `repos pr list --status active`。未指定輸出格式時自動用 JSON。 |
 | `az_devops_help` | 查詢命令語法，等同 `az <command> --help`。 |
 | `az_workitem_attach` | 上傳本機檔案為 work item 附件並建立連結（文字與 binary 皆可，上限 100MB）。例如把 code review 報告或錯誤截圖附到 work item。 |
+| `az_attachment_download` | 下載 work item 的圖與附件到本機。同時收 HTML 欄位的內嵌 `<img>` 與 `relations` 的 `AttachedFile`；內嵌圖不在 `relations` 裡，只查 relations 會漏掉需求描述的截圖。也可用 `url` 模式下載單一附件。 |
 | `az_pr_show` | 取得 PR 完整資訊（REST），含 source/target branch 與狀態，並預設一併回傳關聯 work item（`workItemRefs`）；可用 `includeWorkItemRefs: false` 關閉。 |
 | `az_pr_changes` | 取得 PR 異動檔案清單（REST iterations/changes），自動使用最新 iteration。 |
 | `az_pr_workitems` | 取得 PR 關聯的 work item 清單（REST）。`az_pr_show` 已預設含這份清單，只在單獨要 work item、不想拉整包 PR 資訊時才需要。 |
-| `az_workitem_relations` | 取得 work item 含 relations（REST，$expand=relations），可檢查附件重名。 |
+| `az_workitem_relations` | 取得 work item 含 relations（REST，$expand=relations），可檢查附件重名。注意 `relations` 看不到描述裡的內嵌圖片，要取圖請用 `az_attachment_download`。 |
 | `az_pr_comment` | 在 PR 建立討論串留言或回覆既有討論串（REST）。 |
 | `az_workitem_update` | 更新 work item 欄位／寫入 Discussion（REST json-patch，僅允許 /fields/*）。 |
 | `az_rest` | 通用 Azure DevOps REST 呼叫（GET/POST/PATCH），供未涵蓋的端點使用。 |
@@ -143,7 +144,42 @@ az_workitem_attach { "workItemId": 160708, "filePath": "D:\\report.md" }
   若 work item 不在預設 project，請改用 `az_rest` 自行呼叫 attachments 端點。
 
 只需要確認附件是否已存在（避免重複上傳）時，用 `az_workitem_relations`
-檢查 `AttachedFile` 的 `attributes.name`。
+檢查 `AttachedFile` 的 `attributes.name`。反向要把 work item 的圖與附件抓到本機，
+用 `az_attachment_download`（見下節）。
+
+### 下載 work item 的圖與附件
+
+Azure DevOps 把圖片存在兩個不同的地方，`az_attachment_download` 兩邊都會收：
+
+| 來源 | 出現在哪 | 存到 |
+|------|----------|------|
+| 描述裡貼上的截圖 | HTML 欄位的 `<img src>` | `<outDir>/workitem-<id>/images/` |
+| 掛在 work item 上的附件 | `relations` 的 `AttachedFile` | `<outDir>/workitem-<id>/attachments/` |
+
+掃描的 HTML 欄位有三個：`System.Description`、
+`Microsoft.VSTS.Common.AcceptanceCriteria`、`Microsoft.VSTS.TCM.ReproSteps`。
+
+**內嵌圖片不會出現在 `relations` 裡**，所以只用 `az_workitem_relations` 檢查會漏掉
+需求描述裡的 UI 截圖 —— 實測 work item 160132 有 2 張內嵌圖與 6 個 `.md` 附件，
+`relations` 只看得到後者。
+
+```jsonc
+// 一次抓齊兩個來源
+az_attachment_download { "workItemId": 160132, "outDir": "D:\\sa\\req" }
+// → D:\sa\req\workitem-160132\images\main.png
+//   D:\sa\req\workitem-160132\attachments\spec.md
+
+// 只抓單一附件（url 模式，不建子目錄）
+az_attachment_download { "url": "https://dev.azure.com/...", "outDir": "D:\\tmp" }
+```
+
+`workItemId` 與 `url` 擇一。`outDir` 建議給絕對路徑（相對路徑會以 server 的工作目錄
+解析，回傳訊息一律顯示絕對路徑）。同一次下載內的同名檔會自動改名
+（`main.png` → `main-2.png`）；重跑同一個 work item 則覆蓋，不會無限增生。
+
+單檔上限 100MB。附件 URL 必須與預設 organization 同網域，否則直接拒絕且
+**不發出請求**，避免認證 token 外洩到其他主機。個別檔案下載失敗不會中斷整批，
+會列在回傳訊息的失敗清單裡。
 
 ### 安全防護
 

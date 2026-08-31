@@ -1,10 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ensureJsonOutput, truncateOutput, validateScope } from "./command.js";
 import { execute } from "./executor.js";
 import { appendFlags, BUILT_IN_DEFAULTS, planInjection, } from "./defaults.js";
-import { attachFileToWorkItem, } from "./attachment.js";
+import { attachFileToWorkItem, downloadAttachmentToDir, downloadWorkItemAttachments, } from "./attachment.js";
 import { adoRest } from "./rest.js";
 import { createPullRequestComment, getPullRequestChanges, listPullRequestWorkItems, showPullRequest, } from "./pullRequest.js";
 import { getWorkItemRelations, updateWorkItem } from "./workItem.js";
@@ -74,10 +74,10 @@ async function executeWithInjection(executeFn, command, injected, options) {
         return first;
     return executeFn(appendFlags(command, remaining), options);
 }
-export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, io = { readFile, fetchFn: fetch, env: process.env }) {
+export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, io = { readFile, writeFile, mkdir, fetchFn: fetch, env: process.env }) {
     const server = new McpServer({
         name: "azure-devops-cli-mcp",
-        version: "0.7.0",
+        version: "0.8.0",
     });
     server.registerTool("az_devops", {
         title: "Azure DevOps CLI",
@@ -152,6 +152,66 @@ export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, 
         },
     }, async (params) => {
         const outcome = await attachFileToWorkItem(io, executeFn, defaults, params);
+        if (!outcome.ok) {
+            return {
+                content: [{ type: "text", text: truncateOutput(outcome.error) }],
+                isError: true,
+            };
+        }
+        return {
+            content: [{ type: "text", text: truncateOutput(outcome.message) }],
+        };
+    });
+    server.registerTool("az_attachment_download", {
+        title: "Download Work Item Attachments",
+        description: "下載 Azure DevOps work item 的圖檔與附件到本機。" +
+            "傳 workItemId 會一次抓齊兩個來源：描述等 HTML 欄位的內嵌圖片" +
+            "（存到 <outDir>/workitem-<id>/images/）與 relations 的 AttachedFile" +
+            "（存到 <outDir>/workitem-<id>/attachments/）。" +
+            "內嵌圖片不會出現在 relations，要取需求描述裡的 UI 截圖必須用這個工具，" +
+            "只看 az_workitem_relations 會漏掉。" +
+            "傳 url 則只下載該單一附件到 outDir（不建子目錄）。" +
+            "workItemId 與 url 擇一，單檔上限 100MB。" +
+            `附件 URL 必須與 organization（${defaults.organization}）同網域。`,
+        inputSchema: {
+            workItemId: z
+                .number()
+                .int()
+                .positive()
+                .optional()
+                .describe("要下載附件的 work item ID（與 url 擇一）"),
+            url: z
+                .string()
+                .optional()
+                .describe("單一附件的完整 URL（與 workItemId 擇一）"),
+            outDir: z
+                .string()
+                .describe("存放目錄，建議傳絕對路徑；相對路徑會以 server 工作目錄解析，" +
+                "回傳訊息一律顯示絕對路徑"),
+            fileName: z
+                .string()
+                .optional()
+                .describe("僅 url 模式有效，覆寫存檔名稱"),
+        },
+    }, async ({ workItemId, url, outDir, fileName }) => {
+        if ((workItemId === undefined) === (url === undefined)) {
+            return {
+                content: [
+                    { type: "text", text: "workItemId 與 url 請擇一提供。" },
+                ],
+                isError: true,
+            };
+        }
+        const outcome = url !== undefined
+            ? await downloadAttachmentToDir(io, executeFn, defaults, {
+                url,
+                outDir,
+                fileName,
+            })
+            : await downloadWorkItemAttachments(io, executeFn, defaults, {
+                workItemId: workItemId,
+                outDir,
+            });
         if (!outcome.ok) {
             return {
                 content: [{ type: "text", text: truncateOutput(outcome.error) }],
@@ -281,7 +341,7 @@ export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, 
         title: "Azure DevOps REST (generic)",
         description: "對 Azure DevOps 發送任意 REST 請求（GET/POST/PATCH）。" +
             "優先使用專用工具（az_pr_show、az_pr_changes、az_pr_workitems、" +
-            "az_workitem_relations、az_pr_comment、az_workitem_update、az_workitem_attach）；" +
+            "az_workitem_relations、az_pr_comment、az_workitem_update、az_workitem_attach、az_attachment_download）；" +
             "此工具僅供未涵蓋的端點使用。" +
             `path 為 organization（${defaults.organization}）之後的相對路徑，` +
             "未帶 api-version 時自動補 7.1。",
