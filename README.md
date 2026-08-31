@@ -100,10 +100,11 @@ server 會自動補上這些預設值；命令中明確指定時以命令為準�
 | `az_devops` | 執行任意 DevOps 家族命令，例如 `repos pr list --status active`。未指定輸出格式時自動用 JSON。 |
 | `az_devops_help` | 查詢命令語法，等同 `az <command> --help`。 |
 | `az_workitem_attach` | 上傳本機檔案為 work item 附件並建立連結（文字與 binary 皆可，上限 100MB）。例如把 code review 報告或錯誤截圖附到 work item。 |
+| `az_attachment_download` | 下載 work item 的圖與附件到系統暫存目錄（路徑由 server 決定）。同時收 HTML 欄位的內嵌 `<img>` 與 `relations` 的 `AttachedFile`；內嵌圖不在 `relations` 裡，只查 relations 會漏掉需求描述的截圖。也可用 `url` 模式下載單一附件。 |
 | `az_pr_show` | 取得 PR 完整資訊（REST），含 source/target branch 與狀態，並預設一併回傳關聯 work item（`workItemRefs`）；可用 `includeWorkItemRefs: false` 關閉。 |
 | `az_pr_changes` | 取得 PR 異動檔案清單（REST iterations/changes），自動使用最新 iteration。 |
 | `az_pr_workitems` | 取得 PR 關聯的 work item 清單（REST）。`az_pr_show` 已預設含這份清單，只在單獨要 work item、不想拉整包 PR 資訊時才需要。 |
-| `az_workitem_relations` | 取得 work item 含 relations（REST，$expand=relations），可檢查附件重名。 |
+| `az_workitem_relations` | 取得 work item 含 relations（REST，$expand=relations），可檢查附件重名。注意 `relations` 看不到描述裡的內嵌圖片，要取圖請用 `az_attachment_download`。 |
 | `az_pr_comment` | 在 PR 建立討論串留言或回覆既有討論串（REST）。 |
 | `az_workitem_update` | 更新 work item 欄位／寫入 Discussion（REST json-patch，僅允許 /fields/*）。 |
 | `az_rest` | 通用 Azure DevOps REST 呼叫（GET/POST/PATCH），供未涵蓋的端點使用。 |
@@ -143,7 +144,76 @@ az_workitem_attach { "workItemId": 160708, "filePath": "D:\\report.md" }
   若 work item 不在預設 project，請改用 `az_rest` 自行呼叫 attachments 端點。
 
 只需要確認附件是否已存在（避免重複上傳）時，用 `az_workitem_relations`
-檢查 `AttachedFile` 的 `attributes.name`。
+檢查 `AttachedFile` 的 `attributes.name`。反向要把 work item 的圖與附件抓到本機，
+用 `az_attachment_download`（見下節）。
+
+### 下載 work item 的圖與附件
+
+Azure DevOps 把圖片存在兩個不同的地方，`az_attachment_download` 兩邊都會收：
+
+| 來源 | 出現在哪 | 存到 |
+|------|----------|------|
+| 描述裡貼上的截圖 | HTML 欄位的 `<img src>` | `<暫存根目錄>/workitem-<id>/images/` |
+| 掛在 work item 上的附件 | `relations` 的 `AttachedFile` | `<暫存根目錄>/workitem-<id>/attachments/` |
+
+掃描的 HTML 欄位有三個：`System.Description`、
+`Microsoft.VSTS.Common.AcceptanceCriteria`、`Microsoft.VSTS.TCM.ReproSteps`。
+
+**內嵌圖片不會出現在 `relations` 裡**，所以只用 `az_workitem_relations` 檢查會漏掉
+需求描述裡的 UI 截圖 —— 實測 work item 160132 有 2 張內嵌圖與 6 個 `.md` 附件，
+`relations` 只看得到後者。
+
+#### 檔案存在哪
+
+固定在系統暫存目錄底下的 `azure-devops-mcp/`（Windows 是
+`%TEMP%\azure-devops-mcp\`），**呼叫端無法指定路徑**：
+
+```
+%TEMP%/azure-devops-mcp/
+├─ workitem-160132/
+│  ├─ images/        內嵌截圖
+│  └─ attachments/   AttachedFile
+└─ single/           url 模式的單檔
+```
+
+這是刻意的設計。呼叫這個工具的是模型，而模型可能剛讀完一份**外部可控**的
+work item 描述；若讓呼叫參數決定寫檔位置，等於讓描述內容有機會指定路徑。
+移除參數就沒有這個著陸點。回傳訊息會給出絕對路徑，直接讀取即可。
+
+檔案屬暫存性質，作業系統會自行清理，需要時重抓即可。
+**每次下載同一個 work item 會先清空該資料夾再重抓**，
+所以本機內容一定對應 ADO 現況，不會留下已刪除或改名的舊檔誤導判讀。
+
+```jsonc
+// 一次抓齊兩個來源
+az_attachment_download { "workItemId": 160132 }
+// → C:\Users\<你>\AppData\Local\Temp\azure-devops-mcp\workitem-160132
+//   images/       image.png (221071 bytes)、image-2.png (295748 bytes)
+//   attachments/  design.md (11918 bytes)、spec.md (11956 bytes)…
+
+// 只抓單一附件（relations 的 URL 不帶檔名，記得一併給 fileName）
+az_attachment_download { "url": "https://dev.azure.com/...", "fileName": "design.md" }
+// → …\azure-devops-mcp\single\design.md
+```
+
+`workItemId` 與 `url` 擇一，兩個都給或都不給會被拒絕。
+
+url 模式可另外給 `fileName` 指定存檔名稱。**relations 的附件 URL 不帶檔名**
+（回應的 `content-disposition` 也沒有 filename），所以從 `az_workitem_relations`
+拿到 url 要單獨下載時，請把該附件的 `attributes.name` 一併傳進來，否則會存成
+`attachment`、連抓兩個還會互相覆蓋。內嵌圖的 URL 本身帶 `?fileName=`，不受影響。
+`fileName` 只決定固定暫存目錄裡的檔名，決定不了目錄，且同樣會經過檔名清理。
+同一次下載內的同名檔會自動改名（`image.png` → `image-2.png`）——
+ADO 內嵌圖的預設檔名都叫 `image.png`，這在實務上很常見。
+
+附件名含 Windows 不允許的字元（`< > : " | ? *` 與控制字元）時會換成 `_`。
+`:` 特別重要：NTFS 會把 `report:v1.md` 當成 alternate data stream，
+寫入不會報錯，但目錄裡只留下 0 bytes 的 `report`，內容藏在資料流裡。
+ADO 的附件名可能來自 Mac／Linux，這些字元在那裡是合法的。
+
+單檔上限 100MB。附件 URL 必須與預設 organization 同網域，否則直接拒絕且
+**不發出請求**，避免認證 token 外洩到其他主機。個別檔案下載失敗不會中斷整批，
+會列在回傳訊息的失敗清單裡。
 
 ### 安全防護
 

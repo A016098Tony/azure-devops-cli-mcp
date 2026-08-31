@@ -51,11 +51,12 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
 }
 
 describe("azure-devops-cli-mcp server", () => {
-  test("列出十二個工具", async () => {
+  test("列出十三個工具", async () => {
     const { fake } = makeFakeExecutor();
     const client = await connect(fake);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      "az_attachment_download",
       "az_devops",
       "az_devops_help",
       "az_git_fetch",
@@ -322,6 +323,9 @@ describe("azure-devops-cli-mcp server", () => {
       new Response("{}", { status: 200 }),
     ];
     const io: AttachmentIo = {
+      writeFile: async () => {},
+      mkdir: async () => undefined,
+      rm: async () => {},
       readFile: async () => Buffer.from("報告內容"),
       fetchFn: (async () => responses.shift()!) as typeof fetch,
       env: { AZURE_DEVOPS_EXT_PAT: "pat" },
@@ -342,6 +346,9 @@ describe("azure-devops-cli-mcp server", () => {
       code: "ENOENT",
     });
     const io: AttachmentIo = {
+      writeFile: async () => {},
+      mkdir: async () => undefined,
+      rm: async () => {},
       readFile: async () => { throw enoent; },
       fetchFn: (async () => new Response("{}")) as typeof fetch,
       env: { AZURE_DEVOPS_EXT_PAT: "pat" },
@@ -371,6 +378,9 @@ describe("REST 工具整合", () => {
   ) {
     const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
     const io: AttachmentIo = {
+      writeFile: async () => {},
+      mkdir: async () => undefined,
+      rm: async () => {},
       readFile: async () => {
         throw new Error("not used");
       },

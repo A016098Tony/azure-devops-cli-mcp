@@ -1,11 +1,24 @@
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   attachFileToWorkItem,
   buildLinkPatchBody,
   buildLinkUrl,
   buildUploadUrl,
+  decodeEntities,
+  DOWNLOAD_ROOT,
+  downloadAttachment,
+  downloadAttachmentToDir,
+  downloadWorkItemAttachments,
+  extractInlineImageUrls,
+  fileNameFromAttachmentUrl,
+  isAllowedAttachmentUrl,
   MAX_ATTACHMENT_BYTES,
   resolveAuthHeader,
+  safeFileName,
+  uniqueName,
   type AttachmentIo,
 } from "../src/attachment.js";
 import { BUILT_IN_DEFAULTS } from "../src/defaults.js";
@@ -153,6 +166,9 @@ function makeIo(
 ): AttachmentIo {
   return {
     readFile: async () => Buffer.from([0x00, 0x9f, 0x92, 0x96]), // 非合法 UTF-8 的 binary
+    writeFile: async () => {},
+    mkdir: async () => undefined,
+    rm: async () => {},
     fetchFn,
     env: { AZURE_DEVOPS_EXT_PAT: "pat" },
     ...overrides,
@@ -332,5 +348,611 @@ describe("attachFileToWorkItem", () => {
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("解析");
+  });
+});
+
+
+// ---------- 下載 ----------
+
+const ORG = "https://dev.azure.com/SKMHHIS";
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47];
+const PNG_BYTES = Buffer.from([...PNG_MAGIC, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+const noAz = async (): Promise<ExecResult> => {
+  throw new Error("PAT 模式不應呼叫 az");
+};
+
+/** 203 在 fetch spec 屬 2xx，所以 ok=true —— 正是要靠 isAuthFailure 才擋得掉 */
+function binaryResponse(
+  status: number,
+  body: Uint8Array | ArrayBuffer,
+): Response {
+  const buf =
+    body instanceof ArrayBuffer
+      ? body
+      : body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    arrayBuffer: async () => buf,
+    text: async () => "<binary>",
+  } as unknown as Response;
+}
+
+function makeRecordingIo(fetchFn: typeof fetch) {
+  const writes: Array<{ filePath: string; data: Buffer }> = [];
+  const dirs: string[] = [];
+  const removed: string[] = [];
+  const io: AttachmentIo = {
+    readFile: async () => Buffer.alloc(0),
+    writeFile: async (filePath, data) => {
+      writes.push({ filePath, data });
+    },
+    mkdir: async (dirPath) => {
+      dirs.push(dirPath);
+      return undefined;
+    },
+    rm: async (dirPath) => {
+      removed.push(dirPath);
+    },
+    fetchFn,
+    env: { AZURE_DEVOPS_EXT_PAT: "pat" },
+  };
+  return { io, writes, dirs, removed };
+}
+
+function workItemResponse(
+  fields: Record<string, unknown>,
+  relations?: unknown[],
+): Response {
+  return jsonResponse(200, {
+    id: 160132,
+    fields,
+    ...(relations ? { relations } : {}),
+  });
+}
+
+describe("extractInlineImageUrls", () => {
+  test("只收 ADO 附件 API 的 img，並解 HTML entity", () => {
+    const html =
+      `<div><img src="${ORG}/034d5cd3-0000/_apis/wit/attachments/abc` +
+      `?fileName=main.png&amp;api-version=7.1" />` +
+      '<img src="https://cdn.example.test/logo.png" /></div>';
+    expect(extractInlineImageUrls(html)).toEqual([
+      `${ORG}/034d5cd3-0000/_apis/wit/attachments/abc?fileName=main.png&api-version=7.1`,
+    ]);
+  });
+
+  test("空值與非字串回空陣列", () => {
+    expect(extractInlineImageUrls(undefined)).toEqual([]);
+    expect(extractInlineImageUrls("")).toEqual([]);
+    expect(extractInlineImageUrls(42)).toEqual([]);
+  });
+});
+
+describe("decodeEntities", () => {
+  test("解常見 entity", () => {
+    expect(decodeEntities("a&amp;b&lt;c&gt;d&quot;e&#39;f&nbsp;g")).toBe(
+      'a&b<c>d"e\'f g',
+    );
+  });
+});
+
+describe("檔名處理", () => {
+  test("fileNameFromAttachmentUrl 取 query 的 fileName（已解碼一次，不再重複解）", () => {
+    expect(
+      fileNameFromAttachmentUrl(
+        `${ORG}/_apis/wit/attachments/a?fileName=%E5%9C%96%201.png`,
+      ),
+    ).toBe("圖 1.png");
+  });
+
+  test("沒有 fileName 或非合法 URL 時回 null", () => {
+    expect(fileNameFromAttachmentUrl(`${ORG}/_apis/wit/attachments/a`)).toBeNull();
+    expect(fileNameFromAttachmentUrl("not a url")).toBeNull();
+  });
+
+  test("safeFileName 擋掉路徑穿越，只留檔名", () => {
+    expect(safeFileName("../../evil.exe", "fb")).toBe("evil.exe");
+    expect(safeFileName("..\\..\\evil.exe", "fb")).toBe("evil.exe");
+    expect(safeFileName("C:\\Windows\\System32\\evil.dll", "fb")).toBe(
+      "evil.dll",
+    );
+    expect(safeFileName("   ", "fb")).toBe("fb");
+    expect(safeFileName("..", "fb")).toBe("fb");
+  });
+
+  test("safeFileName 清掉 Windows 非法字元（: 會被 NTFS 當成 data stream）", () => {
+    expect(safeFileName("report:v1.md", "fb")).toBe("report_v1.md");
+    expect(safeFileName("a?b.png", "fb")).toBe("a_b.png");
+    expect(safeFileName('x<y>z|w*v".png', "fb")).toBe("x_y_z_w_v_.png");
+    expect(safeFileName("tab\there.png", "fb")).toBe("tab_here.png");
+  });
+
+  test("safeFileName 去掉結尾的點與空白，但保留開頭的點", () => {
+    expect(safeFileName("file.txt.", "fb")).toBe("file.txt");
+    expect(safeFileName("file.txt...", "fb")).toBe("file.txt");
+    expect(safeFileName("...", "fb")).toBe("fb");
+    expect(safeFileName(".gitignore", "fb")).toBe(".gitignore");
+  });
+
+  test("uniqueName 同批重名改為 -2、-3（比對不分大小寫）", () => {
+    const used = new Set<string>();
+    expect(uniqueName("main.png", used)).toBe("main.png");
+    expect(uniqueName("main.png", used)).toBe("main-2.png");
+    expect(uniqueName("main.png", used)).toBe("main-3.png");
+    expect(uniqueName("MAIN.PNG", used)).toBe("MAIN-4.PNG");
+  });
+});
+
+describe("isAllowedAttachmentUrl", () => {
+  test("同 origin 放行；實測附件 URL 的 project 是 GUID，所以只能比 origin", () => {
+    expect(isAllowedAttachmentUrl(`${ORG}/_apis/wit/attachments/a`, ORG)).toBe(
+      true,
+    );
+    expect(
+      isAllowedAttachmentUrl(
+        "https://dev.azure.com/SKMHHIS/034d5cd3-0000/_apis/wit/attachments/a",
+        ORG,
+      ),
+    ).toBe(true);
+  });
+
+  test("不同 host、不同 scheme、非法 URL 一律擋", () => {
+    expect(isAllowedAttachmentUrl("https://evil.test/a", ORG)).toBe(false);
+    expect(isAllowedAttachmentUrl("http://dev.azure.com/a", ORG)).toBe(false);
+    expect(isAllowedAttachmentUrl("not a url", ORG)).toBe(false);
+  });
+});
+
+describe("downloadAttachment", () => {
+  test("binary 原樣取回，PNG magic bytes 不被字串轉換破壞", async () => {
+    const { fetchFn, calls } = makeFakeFetch([binaryResponse(200, PNG_BYTES)]);
+    const result = await downloadAttachment(
+      { fetchFn },
+      "Bearer t",
+      `${ORG}/_apis/wit/attachments/a`,
+      ORG,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect([...result.buffer.subarray(0, 4)]).toEqual(PNG_MAGIC);
+      expect(result.buffer).toEqual(PNG_BYTES);
+    }
+    expect(
+      (calls[0]?.init.headers as Record<string, string>).Accept,
+    ).toBe("application/octet-stream");
+  });
+
+  test("跨 origin 直接拒絕，完全不發出請求（Authorization 不外洩）", async () => {
+    const { fetchFn, calls } = makeFakeFetch([]);
+    const result = await downloadAttachment(
+      { fetchFn },
+      "Bearer secret",
+      "https://evil.test/steal",
+      ORG,
+    );
+    expect(result.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("203 視為認證失敗（ADO 回 HTML 登入頁），不當成檔案內容", async () => {
+    const { fetchFn } = makeFakeFetch([
+      binaryResponse(203, Buffer.from("<html>login</html>")),
+    ]);
+    const result = await downloadAttachment(
+      { fetchFn },
+      "Bearer t",
+      `${ORG}/_apis/wit/attachments/a`,
+      ORG,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("az login");
+  });
+
+  test("HTTP 404 回錯誤", async () => {
+    const { fetchFn } = makeFakeFetch([
+      binaryResponse(404, Buffer.from("nope")),
+    ]);
+    const result = await downloadAttachment(
+      { fetchFn },
+      "Bearer t",
+      `${ORG}/_apis/wit/attachments/a`,
+      ORG,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("404");
+  });
+
+  test("超過 100MB 上限時拒絕（以實際位元組數判斷）", async () => {
+    const { fetchFn } = makeFakeFetch([
+      binaryResponse(200, new ArrayBuffer(MAX_ATTACHMENT_BYTES + 1)),
+    ]);
+    const result = await downloadAttachment(
+      { fetchFn },
+      "Bearer t",
+      `${ORG}/_apis/wit/attachments/a`,
+      ORG,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("100MB");
+  });
+});
+
+describe("downloadWorkItemAttachments", () => {
+  test("同時收 HTML 內嵌圖與 relations 附件，分別落在 images/ 與 attachments/", async () => {
+    const inlineUrl = `${ORG}/034d5cd3-0000/_apis/wit/attachments/img1?fileName=main.png`;
+    const attachUrl = `${ORG}/034d5cd3-0000/_apis/wit/attachments/att1`;
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse(
+        { "System.Description": `<p><img src="${inlineUrl}"></p>` },
+        [
+          {
+            rel: "AttachedFile",
+            url: attachUrl,
+            attributes: { name: "spec.md" },
+          },
+          { rel: "Hyperlink", url: "https://example.test/x" },
+        ],
+      ),
+      binaryResponse(200, PNG_BYTES),
+      binaryResponse(200, Buffer.from("# spec")),
+    ]);
+    const { io, writes, dirs } = makeRecordingIo(fetchFn);
+    const result = await downloadWorkItemAttachments(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { workItemId: 160132 },
+    );
+
+    expect(result.ok).toBe(true);
+    const root = path.join(DOWNLOAD_ROOT, "workitem-160132");
+    expect(dirs).toEqual([
+      path.join(root, "images"),
+      path.join(root, "attachments"),
+    ]);
+    // 內嵌圖不在 relations 裡，只走 relations 會漏掉它
+    expect(writes.map((w) => w.filePath)).toEqual([
+      path.join(root, "images", "main.png"),
+      path.join(root, "attachments", "spec.md"),
+    ]);
+    expect(writes[0]?.data).toEqual(PNG_BYTES);
+    // Hyperlink 不是附件
+    expect(writes).toHaveLength(2);
+  });
+
+  test("relations 缺席且沒有內嵌圖時，回成功並說明沒有東西可下載", async () => {
+    const { fetchFn } = makeFakeFetch([workItemResponse({})]);
+    const { io, writes, dirs } = makeRecordingIo(fetchFn);
+    const result = await downloadWorkItemAttachments(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { workItemId: 5 },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.files).toEqual([]);
+      expect(result.message).toContain("沒有內嵌圖片");
+    }
+    expect(writes).toHaveLength(0);
+    expect(dirs).toHaveLength(0);
+  });
+
+  test("三個 HTML 欄位都掃，重複的 URL 只下載一次", async () => {
+    const url = `${ORG}/_apis/wit/attachments/i?fileName=a.png`;
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({
+        "System.Description": `<img src="${url}">`,
+        "Microsoft.VSTS.Common.AcceptanceCriteria": `<img src="${url}">`,
+        "Microsoft.VSTS.TCM.ReproSteps": `<img src="${ORG}/_apis/wit/attachments/j?fileName=b.png">`,
+      }),
+      binaryResponse(200, PNG_BYTES),
+      binaryResponse(200, PNG_BYTES),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
+      workItemId: 7
+    });
+    expect(writes.map((w) => path.basename(w.filePath))).toEqual([
+      "a.png",
+      "b.png",
+    ]);
+  });
+
+  test("同名附件不互相覆蓋", async () => {
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({}, [
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/1`,
+          attributes: { name: "main.png" },
+        },
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/2`,
+          attributes: { name: "main.png" },
+        },
+      ]),
+      binaryResponse(200, PNG_BYTES),
+      binaryResponse(200, PNG_BYTES),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
+      workItemId: 7
+    });
+    expect(writes.map((w) => path.basename(w.filePath))).toEqual([
+      "main.png",
+      "main-2.png",
+    ]);
+  });
+
+  test("單一檔案失敗不中斷其他檔案，記在 failures", async () => {
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({}, [
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/1`,
+          attributes: { name: "bad.png" },
+        },
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/2`,
+          attributes: { name: "good.png" },
+        },
+      ]),
+      binaryResponse(500, Buffer.from("boom")),
+      binaryResponse(200, PNG_BYTES),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    const result = await downloadWorkItemAttachments(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { workItemId: 7 },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toContain("bad.png");
+      expect(result.files).toHaveLength(1);
+    }
+    expect(writes.map((w) => path.basename(w.filePath))).toEqual(["good.png"]);
+  });
+
+  test("認證失敗的 203 登入頁不會被寫成檔案", async () => {
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({}, [
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/1`,
+          attributes: { name: "shot.png" },
+        },
+      ]),
+      binaryResponse(203, Buffer.from("<html>login</html>")),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    const result = await downloadWorkItemAttachments(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { workItemId: 7 },
+    );
+    expect(writes).toHaveLength(0);
+    if (result.ok) expect(result.failures[0]).toContain("az login");
+  });
+
+  test("relations 帶路徑穿越檔名時只取檔名", async () => {
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({}, [
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/1`,
+          attributes: { name: "..\\..\\evil.exe" },
+        },
+      ]),
+      binaryResponse(200, Buffer.from("x")),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
+      workItemId: 7
+    });
+    expect(path.basename(writes[0]?.filePath ?? "")).toBe("evil.exe");
+    expect(writes[0]?.filePath).not.toContain("..");
+  });
+
+  test("附件 URL 指向別的網域時該檔失敗，其餘照常", async () => {
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({ "System.Description": '<img src="https://evil.test/_apis/wit/attachments/x">' }),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    const result = await downloadWorkItemAttachments(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { workItemId: 7 },
+    );
+    expect(writes).toHaveLength(0);
+    if (result.ok) {
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toContain("拒絕下載");
+    }
+  });
+});
+
+describe("downloadAttachmentToDir", () => {
+  test("落在 DOWNLOAD_ROOT/single 底下，檔名取自 URL", async () => {
+    const { fetchFn } = makeFakeFetch([binaryResponse(200, PNG_BYTES)]);
+    const { io, writes, dirs } = makeRecordingIo(fetchFn);
+    const result = await downloadAttachmentToDir(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      {
+        url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(dirs).toEqual([path.join(DOWNLOAD_ROOT, "single")]);
+    expect(writes[0]?.filePath).toBe(
+      path.join(DOWNLOAD_ROOT, "single", "orig.png"),
+    );
+    expect(writes[0]?.data).toEqual(PNG_BYTES);
+  });
+
+  test("沒給 fileName 時取 URL 的 fileName", async () => {
+    const { fetchFn } = makeFakeFetch([binaryResponse(200, PNG_BYTES)]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadAttachmentToDir(io, noAz, BUILT_IN_DEFAULTS, {
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`
+    });
+    expect(path.basename(writes[0]?.filePath ?? "")).toBe("orig.png");
+  });
+
+  test("跨 origin 的 url 拒絕且不寫檔、不發請求", async () => {
+    const { fetchFn, calls } = makeFakeFetch([]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    const result = await downloadAttachmentToDir(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { url: "https://evil.test/steal" },
+    );
+    expect(result.ok).toBe(false);
+    expect(writes).toHaveLength(0);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("檔名落地到真實檔案系統（mock 的 writeFile 測不到這一層）", () => {
+  test("清理後的檔名確實建立成檔案，內容不會被 NTFS data stream 吞掉", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "ado-dl-"));
+    try {
+      // "report:v1.md" 未清理時，NTFS 會寫成 "report" 的 alternate data stream：
+      // writeFile 不報錯，但目錄裡只剩 0 bytes 的 "report"
+      for (const raw of ["report:v1.md", "a?b.png", "shot.png"]) {
+        const name = safeFileName(raw, "fallback");
+        const dest = path.join(dir, name);
+        await fsp.writeFile(dest, Buffer.from("DATA"));
+        expect((await fsp.stat(dest)).size).toBe(4);
+      }
+      expect((await fsp.readdir(dir)).sort()).toEqual([
+        "a_b.png",
+        "report_v1.md",
+        "shot.png",
+      ]);
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("下載位置由 server 決定", () => {
+  test("路徑固定在系統暫存目錄，呼叫端無法指定", async () => {
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({}, [
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/1`,
+          attributes: { name: "a.md" },
+        },
+      ]),
+      binaryResponse(200, Buffer.from("x")),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
+      workItemId: 42,
+    });
+    const root = path.join(DOWNLOAD_ROOT, "workitem-42");
+    expect(writes[0]?.filePath).toBe(path.join(root, "attachments", "a.md"));
+    expect(DOWNLOAD_ROOT.startsWith(os.tmpdir())).toBe(true);
+  });
+
+  test("下載前先清空該 work item 的資料夾，舊檔不會殘留", async () => {
+    const { fetchFn } = makeFakeFetch([workItemResponse({})]);
+    const { io, removed } = makeRecordingIo(fetchFn);
+    await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
+      workItemId: 42,
+    });
+    expect(removed).toEqual([path.join(DOWNLOAD_ROOT, "workitem-42")]);
+  });
+
+  test("清空失敗時整批中止，不會在殘留舊檔的情況下混入新檔", async () => {
+    const { fetchFn } = makeFakeFetch([workItemResponse({})]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    io.rm = async () => {
+      throw new Error("EBUSY");
+    };
+    const result = await downloadWorkItemAttachments(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { workItemId: 42 },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("清除舊下載資料夾失敗");
+    expect(writes).toHaveLength(0);
+  });
+});
+
+describe("url 模式的 fileName（只決定檔名，決定不了目錄）", () => {
+  const singleDir = path.join(DOWNLOAD_ROOT, "single");
+
+  async function runSingle(params: {
+    url: string;
+    fileName?: string;
+  }): Promise<{ filePath: string | undefined }> {
+    const { fetchFn } = makeFakeFetch([binaryResponse(200, PNG_BYTES)]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadAttachmentToDir(io, noAz, BUILT_IN_DEFAULTS, params);
+    return { filePath: writes[0]?.filePath };
+  }
+
+  test("有給 fileName 時優先使用", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
+      fileName: "design.md",
+    });
+    expect(filePath).toBe(path.join(singleDir, "design.md"));
+  });
+
+  test("沒給 fileName 時退回 URL 的 fileName", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
+    });
+    expect(filePath).toBe(path.join(singleDir, "orig.png"));
+  });
+
+  test("兩者都沒有時存成 attachment（relations 的 URL 就是這種）", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/3636ff63-68b2-4951-ad24-4a5e14813c23`,
+    });
+    expect(filePath).toBe(path.join(singleDir, "attachment"));
+  });
+
+  test("fileName 帶路徑穿越時只取檔名，跳不出 single/", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a`,
+      fileName: "..\\..\\..\\Windows\\System32\\evil.exe",
+    });
+    expect(filePath).toBe(path.join(singleDir, "evil.exe"));
+    expect(filePath).not.toContain("..");
+  });
+
+  test("fileName 含 Windows 非法字元時一併清理", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a`,
+      fileName: "report:v1.md",
+    });
+    expect(filePath).toBe(path.join(singleDir, "report_v1.md"));
+  });
+
+  test("fileName 是空白字串時視同未提供", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
+      fileName: "   ",
+    });
+    expect(filePath).toBe(path.join(singleDir, "orig.png"));
   });
 });
