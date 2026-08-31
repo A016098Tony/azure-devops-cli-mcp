@@ -51,11 +51,12 @@ function textOf(result: Awaited<ReturnType<Client["callTool"]>>): string {
 }
 
 describe("azure-devops-cli-mcp server", () => {
-  test("列出十二個工具", async () => {
+  test("列出十三個工具", async () => {
     const { fake } = makeFakeExecutor();
     const client = await connect(fake);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
+      "az_attachment_download",
       "az_devops",
       "az_devops_help",
       "az_git_fetch",
