@@ -191,8 +191,8 @@ az_attachment_download { "workItemId": 160132 }
 //   images/       image.png (221071 bytes)、image-2.png (295748 bytes)
 //   attachments/  design.md (11918 bytes)、spec.md (11956 bytes)…
 
-// 只抓單一附件
-az_attachment_download { "url": "https://dev.azure.com/..." }
+// 只抓單一附件（relations 的 URL 不帶檔名，記得一併給 fileName）
+az_attachment_download { "url": "https://dev.azure.com/...", "fileName": "design.md" }
 // → …\azure-devops-mcp\single\design.md
 ```
 
