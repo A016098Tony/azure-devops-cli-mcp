@@ -1,3 +1,5 @@
+import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
@@ -454,6 +456,20 @@ describe("檔名處理", () => {
     expect(safeFileName("..", "fb")).toBe("fb");
   });
 
+  test("safeFileName 清掉 Windows 非法字元（: 會被 NTFS 當成 data stream）", () => {
+    expect(safeFileName("report:v1.md", "fb")).toBe("report_v1.md");
+    expect(safeFileName("a?b.png", "fb")).toBe("a_b.png");
+    expect(safeFileName('x<y>z|w*v".png', "fb")).toBe("x_y_z_w_v_.png");
+    expect(safeFileName("tab\there.png", "fb")).toBe("tab_here.png");
+  });
+
+  test("safeFileName 去掉結尾的點與空白，但保留開頭的點", () => {
+    expect(safeFileName("file.txt.", "fb")).toBe("file.txt");
+    expect(safeFileName("file.txt...", "fb")).toBe("file.txt");
+    expect(safeFileName("...", "fb")).toBe("fb");
+    expect(safeFileName(".gitignore", "fb")).toBe(".gitignore");
+  });
+
   test("uniqueName 同批重名改為 -2、-3（比對不分大小寫）", () => {
     const used = new Set<string>();
     expect(uniqueName("main.png", used)).toBe("main.png");
@@ -806,5 +822,28 @@ describe("downloadAttachmentToDir", () => {
     expect(result.ok).toBe(false);
     expect(writes).toHaveLength(0);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("檔名落地到真實檔案系統（mock 的 writeFile 測不到這一層）", () => {
+  test("清理後的檔名確實建立成檔案，內容不會被 NTFS data stream 吞掉", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "ado-dl-"));
+    try {
+      // "report:v1.md" 未清理時，NTFS 會寫成 "report" 的 alternate data stream：
+      // writeFile 不報錯，但目錄裡只剩 0 bytes 的 "report"
+      for (const raw of ["report:v1.md", "a?b.png", "shot.png"]) {
+        const name = safeFileName(raw, "fallback");
+        const dest = path.join(dir, name);
+        await fsp.writeFile(dest, Buffer.from("DATA"));
+        expect((await fsp.stat(dest)).size).toBe(4);
+      }
+      expect((await fsp.readdir(dir)).sort()).toEqual([
+        "a_b.png",
+        "report_v1.md",
+        "shot.png",
+      ]);
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
   });
 });

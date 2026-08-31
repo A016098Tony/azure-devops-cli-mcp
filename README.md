@@ -177,6 +177,11 @@ az_attachment_download { "url": "https://dev.azure.com/...", "outDir": "D:\\tmp"
 解析，回傳訊息一律顯示絕對路徑）。同一次下載內的同名檔會自動改名
 （`main.png` → `main-2.png`）；重跑同一個 work item 則覆蓋，不會無限增生。
 
+附件名含 Windows 不允許的字元（`< > : " | ? *` 與控制字元）時會換成 `_`。
+`:` 特別重要：NTFS 會把 `report:v1.md` 當成 alternate data stream，
+寫入不會報錯，但目錄裡只留下 0 bytes 的 `report`，內容藏在資料流裡。
+ADO 的附件名可能來自 Mac／Linux，這些字元在那裡是合法的。
+
 單檔上限 100MB。附件 URL 必須與預設 organization 同網域，否則直接拒絕且
 **不發出請求**，避免認證 token 外洩到其他主機。個別檔案下載失敗不會中斷整批，
 會列在回傳訊息的失敗清單裡。

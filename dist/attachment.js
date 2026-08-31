@@ -173,12 +173,22 @@ export function fileNameFromAttachmentUrl(url) {
         return null;
     }
 }
+/**
+ * Windows 檔名不允許的字元。其中 ":" 最危險 —— NTFS 會把 "report:v1.md"
+ * 當成 alternate data stream，writeFile 不報錯，但目錄裡只留下 0 bytes 的
+ * "report"，內容藏在資料流裡。ADO 的附件名可能來自 Mac/Linux，這些字元合法。
+ */
+const ILLEGAL_FILENAME_CHARS = /[<>:"|?*\x00-\x1f]/g;
 /** 只取檔名，擋掉伺服器回傳值裡的路徑穿越；path.win32 同時吃 / 與 \ */
 export function safeFileName(name, fallback) {
     const base = path.win32.basename(name.trim());
-    if (!base || base === "." || base === "..")
+    // 結尾的點與空白會被 Windows 靜默去掉，先自己處理，回報的檔名才與實際相符
+    const cleaned = base
+        .replace(ILLEGAL_FILENAME_CHARS, "_")
+        .replace(/[. ]+$/, "");
+    if (!cleaned || cleaned === "." || cleaned === "..")
         return fallback;
-    return base;
+    return cleaned;
 }
 /**
  * 同一批下載內避免重名：main.png → main-2.png。
