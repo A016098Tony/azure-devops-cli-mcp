@@ -192,8 +192,13 @@ export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, 
                 .string()
                 .optional()
                 .describe("單一附件的完整 URL（與 workItemId 擇一）"),
+            fileName: z
+                .string()
+                .optional()
+                .describe("僅 url 模式有效，指定存檔名稱。relations 的附件 URL 不帶檔名，" +
+                "請把該附件的 attributes.name 一併傳進來，否則會存成 attachment"),
         },
-    }, async ({ workItemId, url }) => {
+    }, async ({ workItemId, url, fileName }) => {
         if ((workItemId === undefined) === (url === undefined)) {
             return {
                 content: [
@@ -203,7 +208,10 @@ export function createServer(executeFn = execute, defaults = BUILT_IN_DEFAULTS, 
             };
         }
         const outcome = url !== undefined
-            ? await downloadAttachmentToDir(io, executeFn, defaults, { url })
+            ? await downloadAttachmentToDir(io, executeFn, defaults, {
+                url,
+                fileName,
+            })
             : await downloadWorkItemAttachments(io, executeFn, defaults, {
                 workItemId: workItemId,
             });

@@ -393,6 +393,13 @@ export interface DownloadWorkItemParams {
 
 export interface DownloadUrlParams {
   url: string;
+  /**
+   * 指定存檔名稱。relations 的附件 URL 不帶 ?fileName=，回應的
+   * content-disposition 也沒有 filename，所以單檔模式只能由呼叫端提供，
+   * 否則只能 fallback 成 "attachment"。
+   * 這個值只決定固定暫存目錄裡的檔名，決定不了目錄，且會經過 safeFileName。
+   */
+  fileName?: string;
 }
 
 async function ensureDir(
@@ -425,7 +432,9 @@ export async function downloadAttachmentToDir(
   if (!created.ok) return created;
 
   const name = safeFileName(
-    fileNameFromAttachmentUrl(params.url) ?? "attachment",
+    params.fileName?.trim() ||
+      fileNameFromAttachmentUrl(params.url) ||
+      "attachment",
     "attachment",
   );
 

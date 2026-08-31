@@ -294,7 +294,9 @@ export async function downloadAttachmentToDir(io, executeFn, defaults, params) {
     const created = await ensureDir(io, dir);
     if (!created.ok)
         return created;
-    const name = safeFileName(fileNameFromAttachmentUrl(params.url) ?? "attachment", "attachment");
+    const name = safeFileName(params.fileName?.trim() ||
+        fileNameFromAttachmentUrl(params.url) ||
+        "attachment", "attachment");
     const result = await downloadAttachment(io, auth.header, params.url, defaults.organization);
     if (!result.ok)
         return { ok: false, error: result.error };

@@ -197,6 +197,12 @@ az_attachment_download { "url": "https://dev.azure.com/..." }
 ```
 
 `workItemId` 與 `url` 擇一，兩個都給或都不給會被拒絕。
+
+url 模式可另外給 `fileName` 指定存檔名稱。**relations 的附件 URL 不帶檔名**
+（回應的 `content-disposition` 也沒有 filename），所以從 `az_workitem_relations`
+拿到 url 要單獨下載時，請把該附件的 `attributes.name` 一併傳進來，否則會存成
+`attachment`、連抓兩個還會互相覆蓋。內嵌圖的 URL 本身帶 `?fileName=`，不受影響。
+`fileName` 只決定固定暫存目錄裡的檔名，決定不了目錄，且同樣會經過檔名清理。
 同一次下載內的同名檔會自動改名（`image.png` → `image-2.png`）——
 ADO 內嵌圖的預設檔名都叫 `image.png`，這在實務上很常見。
 

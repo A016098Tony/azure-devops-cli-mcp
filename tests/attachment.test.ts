@@ -895,3 +895,64 @@ describe("下載位置由 server 決定", () => {
     expect(writes).toHaveLength(0);
   });
 });
+
+describe("url 模式的 fileName（只決定檔名，決定不了目錄）", () => {
+  const singleDir = path.join(DOWNLOAD_ROOT, "single");
+
+  async function runSingle(params: {
+    url: string;
+    fileName?: string;
+  }): Promise<{ filePath: string | undefined }> {
+    const { fetchFn } = makeFakeFetch([binaryResponse(200, PNG_BYTES)]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadAttachmentToDir(io, noAz, BUILT_IN_DEFAULTS, params);
+    return { filePath: writes[0]?.filePath };
+  }
+
+  test("有給 fileName 時優先使用", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
+      fileName: "design.md",
+    });
+    expect(filePath).toBe(path.join(singleDir, "design.md"));
+  });
+
+  test("沒給 fileName 時退回 URL 的 fileName", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
+    });
+    expect(filePath).toBe(path.join(singleDir, "orig.png"));
+  });
+
+  test("兩者都沒有時存成 attachment（relations 的 URL 就是這種）", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/3636ff63-68b2-4951-ad24-4a5e14813c23`,
+    });
+    expect(filePath).toBe(path.join(singleDir, "attachment"));
+  });
+
+  test("fileName 帶路徑穿越時只取檔名，跳不出 single/", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a`,
+      fileName: "..\\..\\..\\Windows\\System32\\evil.exe",
+    });
+    expect(filePath).toBe(path.join(singleDir, "evil.exe"));
+    expect(filePath).not.toContain("..");
+  });
+
+  test("fileName 含 Windows 非法字元時一併清理", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a`,
+      fileName: "report:v1.md",
+    });
+    expect(filePath).toBe(path.join(singleDir, "report_v1.md"));
+  });
+
+  test("fileName 是空白字串時視同未提供", async () => {
+    const { filePath } = await runSingle({
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
+      fileName: "   ",
+    });
+    expect(filePath).toBe(path.join(singleDir, "orig.png"));
+  });
+});
