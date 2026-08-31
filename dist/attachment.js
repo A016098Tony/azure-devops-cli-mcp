@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { API_VERSION, AUTH_HINT, isAuthFailure, readBodySnippet, resolveAuthHeader, } from "./auth.js";
 import { adoRest } from "./rest.js";
@@ -135,6 +136,13 @@ export async function attachFileToWorkItem(io, executeFn, defaults, params) {
     };
 }
 // ---------- 下載 ----------
+/**
+ * 下載一律落在系統暫存目錄底下的固定位置，不接受呼叫端指定路徑。
+ * 呼叫這個工具的是模型，而模型可能剛讀完一份外部可控的 work item 描述；
+ * 讓描述有機會影響寫檔位置等於開了一個 prompt injection 的著陸點。
+ * 檔案是暫存性質，需要時重抓即可。
+ */
+export const DOWNLOAD_ROOT = path.join(os.tmpdir(), "azure-devops-mcp");
 // 內嵌圖片可能出現的 HTML 欄位；與 get-workitem skill 掃描範圍一致
 const HTML_FIELD_NAMES = [
     "System.Description",
@@ -192,7 +200,8 @@ export function safeFileName(name, fallback) {
 }
 /**
  * 同一批下載內避免重名：main.png → main-2.png。
- * 不檢查磁碟上既有檔案，因此重跑同一個 work item 會覆蓋而非無限增生。
+ * 不檢查磁碟上既有檔案；work item 模式每次下載前會清空該資料夾，
+ * 所以重跑不會讓檔名一直往後長。
  */
 export function uniqueName(name, used) {
     let candidate = name;
@@ -276,23 +285,20 @@ async function ensureDir(io, dir) {
         };
     }
 }
-/** 下載單一附件 URL 到 outDir（不建子目錄）。 */
+/** 下載單一附件 URL 到 <DOWNLOAD_ROOT>/single/。 */
 export async function downloadAttachmentToDir(io, executeFn, defaults, params) {
     const auth = await resolveAuthHeader(io.env, executeFn);
     if (!auth.ok)
         return { ok: false, error: auth.error };
-    const outDir = path.resolve(params.outDir);
-    const created = await ensureDir(io, outDir);
+    const dir = path.join(DOWNLOAD_ROOT, "single");
+    const created = await ensureDir(io, dir);
     if (!created.ok)
         return created;
-    const raw = params.fileName?.trim() ||
-        fileNameFromAttachmentUrl(params.url) ||
-        "attachment";
-    const name = safeFileName(raw, "attachment");
+    const name = safeFileName(fileNameFromAttachmentUrl(params.url) ?? "attachment", "attachment");
     const result = await downloadAttachment(io, auth.header, params.url, defaults.organization);
     if (!result.ok)
         return { ok: false, error: result.error };
-    const localPath = path.join(outDir, name);
+    const localPath = path.join(dir, name);
     try {
         await io.writeFile(localPath, result.buffer);
     }
@@ -304,16 +310,50 @@ export async function downloadAttachmentToDir(io, executeFn, defaults, params) {
     }
     return {
         ok: true,
-        message: `已下載「${name}」（${result.buffer.length} bytes）到 ${localPath}`,
-        files: [{ name, url: params.url, localPath, bytes: result.buffer.length }],
+        message: `已下載「${name}」（${result.buffer.length} bytes）到\n${localPath}`,
+        files: [
+            {
+                name,
+                url: params.url,
+                localPath,
+                bytes: result.buffer.length,
+                group: "single",
+            },
+        ],
         failures: [],
     };
 }
+function formatWorkItemMessage(workItemId, root, files, failures) {
+    if (files.length === 0 && failures.length === 0) {
+        return `Work item #${workItemId} 沒有內嵌圖片，也沒有附件。`;
+    }
+    const lines = [
+        `Work item #${workItemId} 已下載 ${files.length} 個檔案到`,
+        root,
+    ];
+    for (const group of ["images", "attachments"]) {
+        const inGroup = files.filter((f) => f.group === group);
+        if (inGroup.length === 0)
+            continue;
+        lines.push("", `${group}/`);
+        for (const f of inGroup)
+            lines.push(`  ${f.name} (${f.bytes} bytes)`);
+    }
+    if (failures.length > 0) {
+        lines.push("", `以下 ${failures.length} 個項目失敗：`);
+        for (const msg of failures)
+            lines.push(`- ${msg}`);
+    }
+    return lines.join("\n");
+}
 /**
- * 下載 work item 的所有圖檔與附件到 <outDir>/workitem-<id>/。
+ * 下載 work item 的所有圖檔與附件到 <DOWNLOAD_ROOT>/workitem-<id>/。
  * 兩個來源都收：HTML 欄位的內嵌圖片（→ images/）與 relations 的
  * AttachedFile（→ attachments/）。內嵌圖片不會出現在 relations，
  * 只走 relations 會漏掉需求描述裡的 UI 截圖。
+ *
+ * 下載前會先清空該 work item 的資料夾，確保本機內容與 ADO 現況一致，
+ * 不會留下已在 ADO 上刪除或改名的舊檔誤導後續判讀。
  */
 export async function downloadWorkItemAttachments(io, executeFn, defaults, params) {
     // $expand=all 一次帶回 fields 與 relations
@@ -336,7 +376,17 @@ export async function downloadWorkItemAttachments(io, executeFn, defaults, param
     const auth = await resolveAuthHeader(io.env, executeFn);
     if (!auth.ok)
         return { ok: false, error: auth.error };
-    const root = path.join(path.resolve(params.outDir), `workitem-${params.workItemId}`);
+    // 路徑完全由 server 決定：DOWNLOAD_ROOT 是常數，workItemId 經 zod 限制為正整數
+    const root = path.join(DOWNLOAD_ROOT, `workitem-${params.workItemId}`);
+    try {
+        await io.rm(root, { recursive: true, force: true });
+    }
+    catch (error) {
+        return {
+            ok: false,
+            error: `清除舊下載資料夾失敗：${root}（${error.message}）`,
+        };
+    }
     const files = [];
     const failures = [];
     // 1. HTML 欄位的內嵌圖片
@@ -373,7 +423,13 @@ export async function downloadWorkItemAttachments(io, executeFn, defaults, param
                 failures.push(`內嵌圖片 ${name}：寫入失敗（${error.message}）`);
                 continue;
             }
-            files.push({ name, url, localPath, bytes: result.buffer.length });
+            files.push({
+                name,
+                url,
+                localPath,
+                bytes: result.buffer.length,
+                group: "images",
+            });
         }
     }
     // 2. relations 的 AttachedFile（不限圖片）
@@ -403,23 +459,19 @@ export async function downloadWorkItemAttachments(io, executeFn, defaults, param
                 failures.push(`附件 ${name}：寫入失敗（${error.message}）`);
                 continue;
             }
-            files.push({ name, url: rel.url, localPath, bytes: result.buffer.length });
+            files.push({
+                name,
+                url: rel.url,
+                localPath,
+                bytes: result.buffer.length,
+                group: "attachments",
+            });
         }
     }
-    if (files.length === 0 && failures.length === 0) {
-        return {
-            ok: true,
-            message: `Work item #${params.workItemId} 沒有內嵌圖片，也沒有附件。`,
-            files,
-            failures,
-        };
-    }
-    const lines = [
-        `Work item #${params.workItemId} 已下載 ${files.length} 個檔案到 ${root}：`,
-        ...files.map((f) => `- ${f.localPath}（${f.bytes} bytes）`),
-    ];
-    if (failures.length > 0) {
-        lines.push("", `以下 ${failures.length} 個項目失敗：`, ...failures.map((m) => `- ${m}`));
-    }
-    return { ok: true, message: lines.join("\n"), files, failures };
+    return {
+        ok: true,
+        message: formatWorkItemMessage(params.workItemId, root, files, failures),
+        files,
+        failures,
+    };
 }

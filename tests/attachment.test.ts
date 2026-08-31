@@ -8,6 +8,7 @@ import {
   buildLinkUrl,
   buildUploadUrl,
   decodeEntities,
+  DOWNLOAD_ROOT,
   downloadAttachment,
   downloadAttachmentToDir,
   downloadWorkItemAttachments,
@@ -167,6 +168,7 @@ function makeIo(
     readFile: async () => Buffer.from([0x00, 0x9f, 0x92, 0x96]), // 非合法 UTF-8 的 binary
     writeFile: async () => {},
     mkdir: async () => undefined,
+    rm: async () => {},
     fetchFn,
     env: { AZURE_DEVOPS_EXT_PAT: "pat" },
     ...overrides,
@@ -380,6 +382,7 @@ function binaryResponse(
 function makeRecordingIo(fetchFn: typeof fetch) {
   const writes: Array<{ filePath: string; data: Buffer }> = [];
   const dirs: string[] = [];
+  const removed: string[] = [];
   const io: AttachmentIo = {
     readFile: async () => Buffer.alloc(0),
     writeFile: async (filePath, data) => {
@@ -389,10 +392,13 @@ function makeRecordingIo(fetchFn: typeof fetch) {
       dirs.push(dirPath);
       return undefined;
     },
+    rm: async (dirPath) => {
+      removed.push(dirPath);
+    },
     fetchFn,
     env: { AZURE_DEVOPS_EXT_PAT: "pat" },
   };
-  return { io, writes, dirs };
+  return { io, writes, dirs, removed };
 }
 
 function workItemResponse(
@@ -597,11 +603,11 @@ describe("downloadWorkItemAttachments", () => {
       io,
       noAz,
       BUILT_IN_DEFAULTS,
-      { workItemId: 160132, outDir: "out" },
+      { workItemId: 160132 },
     );
 
     expect(result.ok).toBe(true);
-    const root = path.join(path.resolve("out"), "workitem-160132");
+    const root = path.join(DOWNLOAD_ROOT, "workitem-160132");
     expect(dirs).toEqual([
       path.join(root, "images"),
       path.join(root, "attachments"),
@@ -623,7 +629,7 @@ describe("downloadWorkItemAttachments", () => {
       io,
       noAz,
       BUILT_IN_DEFAULTS,
-      { workItemId: 5, outDir: "out" },
+      { workItemId: 5 },
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -647,8 +653,7 @@ describe("downloadWorkItemAttachments", () => {
     ]);
     const { io, writes } = makeRecordingIo(fetchFn);
     await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
-      workItemId: 7,
-      outDir: "out",
+      workItemId: 7
     });
     expect(writes.map((w) => path.basename(w.filePath))).toEqual([
       "a.png",
@@ -675,8 +680,7 @@ describe("downloadWorkItemAttachments", () => {
     ]);
     const { io, writes } = makeRecordingIo(fetchFn);
     await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
-      workItemId: 7,
-      outDir: "out",
+      workItemId: 7
     });
     expect(writes.map((w) => path.basename(w.filePath))).toEqual([
       "main.png",
@@ -706,7 +710,7 @@ describe("downloadWorkItemAttachments", () => {
       io,
       noAz,
       BUILT_IN_DEFAULTS,
-      { workItemId: 7, outDir: "out" },
+      { workItemId: 7 },
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -733,7 +737,7 @@ describe("downloadWorkItemAttachments", () => {
       io,
       noAz,
       BUILT_IN_DEFAULTS,
-      { workItemId: 7, outDir: "out" },
+      { workItemId: 7 },
     );
     expect(writes).toHaveLength(0);
     if (result.ok) expect(result.failures[0]).toContain("az login");
@@ -752,8 +756,7 @@ describe("downloadWorkItemAttachments", () => {
     ]);
     const { io, writes } = makeRecordingIo(fetchFn);
     await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
-      workItemId: 7,
-      outDir: "out",
+      workItemId: 7
     });
     expect(path.basename(writes[0]?.filePath ?? "")).toBe("evil.exe");
     expect(writes[0]?.filePath).not.toContain("..");
@@ -768,7 +771,7 @@ describe("downloadWorkItemAttachments", () => {
       io,
       noAz,
       BUILT_IN_DEFAULTS,
-      { workItemId: 7, outDir: "out" },
+      { workItemId: 7 },
     );
     expect(writes).toHaveLength(0);
     if (result.ok) {
@@ -779,7 +782,7 @@ describe("downloadWorkItemAttachments", () => {
 });
 
 describe("downloadAttachmentToDir", () => {
-  test("落在 outDir 底下不建子目錄，fileName 可覆寫", async () => {
+  test("落在 DOWNLOAD_ROOT/single 底下，檔名取自 URL", async () => {
     const { fetchFn } = makeFakeFetch([binaryResponse(200, PNG_BYTES)]);
     const { io, writes, dirs } = makeRecordingIo(fetchFn);
     const result = await downloadAttachmentToDir(
@@ -788,14 +791,12 @@ describe("downloadAttachmentToDir", () => {
       BUILT_IN_DEFAULTS,
       {
         url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
-        outDir: "out",
-        fileName: "rename.png",
       },
     );
     expect(result.ok).toBe(true);
-    expect(dirs).toEqual([path.resolve("out")]);
+    expect(dirs).toEqual([path.join(DOWNLOAD_ROOT, "single")]);
     expect(writes[0]?.filePath).toBe(
-      path.join(path.resolve("out"), "rename.png"),
+      path.join(DOWNLOAD_ROOT, "single", "orig.png"),
     );
     expect(writes[0]?.data).toEqual(PNG_BYTES);
   });
@@ -804,8 +805,7 @@ describe("downloadAttachmentToDir", () => {
     const { fetchFn } = makeFakeFetch([binaryResponse(200, PNG_BYTES)]);
     const { io, writes } = makeRecordingIo(fetchFn);
     await downloadAttachmentToDir(io, noAz, BUILT_IN_DEFAULTS, {
-      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`,
-      outDir: "out",
+      url: `${ORG}/_apis/wit/attachments/a?fileName=orig.png`
     });
     expect(path.basename(writes[0]?.filePath ?? "")).toBe("orig.png");
   });
@@ -817,7 +817,7 @@ describe("downloadAttachmentToDir", () => {
       io,
       noAz,
       BUILT_IN_DEFAULTS,
-      { url: "https://evil.test/steal", outDir: "out" },
+      { url: "https://evil.test/steal" },
     );
     expect(result.ok).toBe(false);
     expect(writes).toHaveLength(0);
@@ -845,5 +845,53 @@ describe("檔名落地到真實檔案系統（mock 的 writeFile 測不到這一
     } finally {
       await fsp.rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("下載位置由 server 決定", () => {
+  test("路徑固定在系統暫存目錄，呼叫端無法指定", async () => {
+    const { fetchFn } = makeFakeFetch([
+      workItemResponse({}, [
+        {
+          rel: "AttachedFile",
+          url: `${ORG}/_apis/wit/attachments/1`,
+          attributes: { name: "a.md" },
+        },
+      ]),
+      binaryResponse(200, Buffer.from("x")),
+    ]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
+      workItemId: 42,
+    });
+    const root = path.join(DOWNLOAD_ROOT, "workitem-42");
+    expect(writes[0]?.filePath).toBe(path.join(root, "attachments", "a.md"));
+    expect(DOWNLOAD_ROOT.startsWith(os.tmpdir())).toBe(true);
+  });
+
+  test("下載前先清空該 work item 的資料夾，舊檔不會殘留", async () => {
+    const { fetchFn } = makeFakeFetch([workItemResponse({})]);
+    const { io, removed } = makeRecordingIo(fetchFn);
+    await downloadWorkItemAttachments(io, noAz, BUILT_IN_DEFAULTS, {
+      workItemId: 42,
+    });
+    expect(removed).toEqual([path.join(DOWNLOAD_ROOT, "workitem-42")]);
+  });
+
+  test("清空失敗時整批中止，不會在殘留舊檔的情況下混入新檔", async () => {
+    const { fetchFn } = makeFakeFetch([workItemResponse({})]);
+    const { io, writes } = makeRecordingIo(fetchFn);
+    io.rm = async () => {
+      throw new Error("EBUSY");
+    };
+    const result = await downloadWorkItemAttachments(
+      io,
+      noAz,
+      BUILT_IN_DEFAULTS,
+      { workItemId: 42 },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("清除舊下載資料夾失敗");
+    expect(writes).toHaveLength(0);
   });
 });

@@ -325,6 +325,7 @@ describe("azure-devops-cli-mcp server", () => {
     const io: AttachmentIo = {
       writeFile: async () => {},
       mkdir: async () => undefined,
+      rm: async () => {},
       readFile: async () => Buffer.from("報告內容"),
       fetchFn: (async () => responses.shift()!) as typeof fetch,
       env: { AZURE_DEVOPS_EXT_PAT: "pat" },
@@ -347,6 +348,7 @@ describe("azure-devops-cli-mcp server", () => {
     const io: AttachmentIo = {
       writeFile: async () => {},
       mkdir: async () => undefined,
+      rm: async () => {},
       readFile: async () => { throw enoent; },
       fetchFn: (async () => new Response("{}")) as typeof fetch,
       env: { AZURE_DEVOPS_EXT_PAT: "pat" },
@@ -378,6 +380,7 @@ describe("REST 工具整合", () => {
     const io: AttachmentIo = {
       writeFile: async () => {},
       mkdir: async () => undefined,
+      rm: async () => {},
       readFile: async () => {
         throw new Error("not used");
       },
