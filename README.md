@@ -93,6 +93,20 @@ server 會自動補上這些預設值；命令中明確指定時以命令為準�
 **務必完整結束並重新啟動 Claude Desktop**（關閉分頁不夠，要整個結束再開）才會載入。
 啟動後可在對話框左下角的「+」→ Connectors 看到 `azure-devops-cli` 及其工具。
 
+### 輸出編碼（中文亂碼）
+
+Windows 上的 `az` 往 pipe 輸出時使用系統 ANSI code page（繁中為 cp950 / Big5），
+而不是 UTF-8；`az.cmd` 以 `python -I` 啟動，`PYTHONUTF8`、`PYTHONIOENCODING`
+與 `chcp 65001` 都無效。server 因此會先嚴格以 UTF-8 解碼 `az` / `git` 的 stdout 與 stderr，
+失敗時改用系統 ANSI code page 解碼（950→Big5、936→GBK、932→Shift_JIS、949→EUC-KR、
+125x→windows-125x），查不到或不認得時退回 UTF-8。
+
+若自動偵測不準，可在 MCP 設定的 `env` 設定 `AZ_OUTPUT_ENCODING`
+（`TextDecoder` 支援的編碼名稱，如 `big5`、`gbk`），它只在輸出不是合法 UTF-8 時作為備援編碼。
+
+> **限制**：不在 Big5 範圍的字元（如 emoji、部分罕用字）在 `az` 端就無法編碼，
+> 這類內容請改用走 REST 的工具（如 `az_workitem_relations`、`az_rest`）讀取。
+
 ## 工具
 
 | 工具 | 用途 |
